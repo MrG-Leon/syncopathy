@@ -124,6 +124,21 @@ void main() {
         expect(a.pos, inInclusiveRange(0, 100));
       }
     });
+
+    test('a factor below 1.0 attenuates deviation from the baseline', () {
+      final input = acts([
+        [0, 20],
+        [500, 80],
+        [1000, 20],
+      ]);
+      // All three points share a 40 baseline in the 2s window, so halving the
+      // deviation moves 20..80 around it to 30..60.
+      expect(dump(FunscriptAlgorithms.intensity(input, 0.5)), [
+        [0, 30],
+        [500, 60],
+        [1000, 30],
+      ]);
+    });
   });
 
   group('slew', () {

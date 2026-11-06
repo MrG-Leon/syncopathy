@@ -8,11 +8,12 @@ part of 'shortcut_settings.dart';
 
 ShortcutBinding _$ShortcutBindingFromJson(Map<String, dynamic> json) =>
     ShortcutBinding(
-      keyId: (json['keyId'] as num).toInt(),
+      keyId: (json['keyId'] as num?)?.toInt() ?? 0,
       control: json['control'] as bool? ?? false,
       shift: json['shift'] as bool? ?? false,
       alt: json['alt'] as bool? ?? false,
       meta: json['meta'] as bool? ?? false,
+      mouseButton: json['mouseButton'] as String?,
     );
 
 Map<String, dynamic> _$ShortcutBindingToJson(ShortcutBinding instance) =>
@@ -22,4 +23,5 @@ Map<String, dynamic> _$ShortcutBindingToJson(ShortcutBinding instance) =>
       'shift': instance.shift,
       'alt': instance.alt,
       'meta': instance.meta,
+      'mouseButton': instance.mouseButton,
     };

@@ -1,8 +1,25 @@
+import 'dart:async';
+
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:syncopathy/ioc.dart';
 import 'package:syncopathy/model/auto_home.dart';
 import 'package:syncopathy/model/home_target.dart';
 import 'package:syncopathy/model/json/settings.dart';
 import 'package:syncopathy/model/settings_model.dart';
+import 'package:syncopathy/platform/key_value_store/key_value_store.dart';
+
+class _FakeKeyValueStore implements IKeyValueStore {
+  final Map<String, Map<String, dynamic>> values = {};
+
+  @override
+  Future<Map<String, dynamic>?> get(String key) async => values[key];
+
+  @override
+  Future<void> put(String key, Map<String, dynamic> json) async {
+    values[key] = json;
+  }
+}
 
 /// Covers "Home on pause": the ownership rules that decide when playback state
 /// may drive Home Mode, plus the two settings behind the feature.
@@ -197,6 +214,189 @@ void main() {
           HomeTarget.maxMoveDurationMs,
         ),
       );
+    });
+  });
+
+  group('edgeModeActivationCount', () {
+    test('counts Edge Mode entries for this session only', () async {
+      final settings = SettingsModel();
+      expect(settings.edgeModeActivationCount.value, 0);
+
+      settings.toggleHomeDevice(edgeMode: true);
+      expect(settings.edgeModeActivationCount.value, 1);
+
+      // Toggling Edge Mode off again is not another entry.
+      settings.toggleHomeDevice(edgeMode: true);
+      expect(settings.edgeModeActivationCount.value, 1);
+
+      settings.toggleHomeDevice(edgeMode: true);
+      expect(settings.edgeModeActivationCount.value, 2);
+
+      await settings.dispose();
+
+      // A fresh model represents a fresh session.
+      expect(SettingsModel().edgeModeActivationCount.value, 0);
+    });
+  });
+
+  group('edge mode adjustments', () {
+    test('automatic toggle-back reduces intensity and increases the next delay', () {
+      fakeAsync((async) {
+        final settings = SettingsModel()
+          ..intensity.value = 1.0
+          ..edgeModeIntensityStep.value = 0.05
+          ..edgeModeAutoToggleDelaySeconds.value = 10
+          ..edgeModeDelayStepSeconds.value = 4;
+
+        settings.toggleHomeDevice(edgeMode: true);
+        expect(settings.homeDeviceEnabled.value, isTrue);
+
+        async.elapse(const Duration(seconds: 10));
+
+        expect(settings.homeDeviceEnabled.value, isFalse);
+        expect(settings.intensity.value, closeTo(0.95, 1e-9));
+        expect(settings.edgeModeAutoToggleDelaySeconds.value, 14);
+      });
+    });
+
+    test('manual exit leaves intensity and the next delay unchanged', () {
+      fakeAsync((async) {
+        final settings = SettingsModel()
+          ..intensity.value = 1.0
+          ..edgeModeIntensityStep.value = 0.05
+          ..edgeModeAutoToggleDelaySeconds.value = 10
+          ..edgeModeDelayStepSeconds.value = 4;
+
+        settings.toggleHomeDevice(edgeMode: true);
+        settings.toggleHomeDevice(edgeMode: true); // manual exit
+
+        async.elapse(const Duration(seconds: 10));
+
+        expect(settings.homeDeviceEnabled.value, isFalse);
+        expect(settings.intensity.value, 1.0);
+        expect(settings.edgeModeAutoToggleDelaySeconds.value, 10);
+      });
+    });
+
+    test('adjustment settings round-trip through json', () {
+      final json = (Settings()
+            ..edgeModeIntensityStep = 0.12
+            ..edgeModeDelayStepSeconds = 7
+            ..edgeModeIntensityFloor = 0.2
+            ..edgeModeDelayCeilingSeconds = 60)
+          .toJson();
+      final decoded = Settings.fromJson(json);
+      expect(decoded.edgeModeIntensityStep, 0.12);
+      expect(decoded.edgeModeDelayStepSeconds, 7);
+      expect(decoded.edgeModeIntensityFloor, 0.2);
+      expect(decoded.edgeModeDelayCeilingSeconds, 60);
+    });
+
+    test('automatic adjustments stop at the configured bounds', () {
+      fakeAsync((async) {
+        final settings = SettingsModel()
+          ..intensity.value = 0.07
+          ..edgeModeIntensityStep.value = 0.05
+          ..edgeModeIntensityFloor.value = 0.05
+          ..edgeModeAutoToggleDelaySeconds.value = 88
+          ..edgeModeDelayStepSeconds.value = 5
+          ..edgeModeDelayCeilingSeconds.value = 90;
+
+        settings.toggleHomeDevice(edgeMode: true);
+        async.elapse(const Duration(seconds: 88));
+
+        expect(settings.intensity.value, closeTo(0.05, 1e-9));
+        expect(settings.edgeModeAutoToggleDelaySeconds.value, 90);
+
+        // At both bounds the next automatic toggle-back changes nothing.
+        settings.toggleHomeDevice(edgeMode: true);
+        async.elapse(const Duration(seconds: 90));
+
+        expect(settings.intensity.value, closeTo(0.05, 1e-9));
+        expect(settings.edgeModeAutoToggleDelaySeconds.value, 90);
+      });
+    });
+  });
+
+  group('edge mode persistence', () {
+    late _FakeKeyValueStore store;
+
+    setUp(() async {
+      await getIt.reset();
+      store = _FakeKeyValueStore();
+      getIt.registerSingleton<IKeyValueStore>(store);
+    });
+
+    tearDown(() async {
+      await getIt.reset();
+    });
+
+    test('automatic adjustments stay session-local while manual changes persist', () {
+      fakeAsync((async) {
+        store.values[Settings.key] = (Settings()
+              ..intensity = 1.0
+              ..edgeModeAutoToggleDelaySeconds = 20)
+            .toJson();
+
+        final settings = SettingsModel();
+        unawaited(settings.load());
+        async.flushMicrotasks();
+
+        expect(settings.intensity.value, 1.0);
+        expect(settings.edgeModeAutoToggleDelaySeconds.value, 20);
+
+        // Manual changes are written to the persisted entity.
+        settings.setIntensity(1.5);
+        settings.setEdgeModeDelay(12);
+        async.elapse(const Duration(milliseconds: 600));
+        expect(store.values[Settings.key]!['intensity'], 1.5);
+        expect(
+          store.values[Settings.key]!['edgeModeAutoToggleDelaySeconds'],
+          12,
+        );
+
+        // A save triggered by another bound setting still writes the manual
+        // values, not anything Edge Mode changes later.
+        settings.edgeModeIntensityStep.value = 0.05;
+        settings.edgeModeDelayStepSeconds.value = 4;
+        async.elapse(const Duration(milliseconds: 600));
+        expect(store.values[Settings.key]!['intensity'], 1.5);
+        expect(
+          store.values[Settings.key]!['edgeModeAutoToggleDelaySeconds'],
+          12,
+        );
+
+        // The automatic toggle-back changes only the live signals.
+        settings.toggleHomeDevice(edgeMode: true);
+        async.elapse(const Duration(seconds: 12));
+        expect(settings.intensity.value, closeTo(1.45, 1e-9));
+        expect(settings.edgeModeAutoToggleDelaySeconds.value, 16);
+        expect(store.values[Settings.key]!['intensity'], 1.5);
+        expect(
+          store.values[Settings.key]!['edgeModeAutoToggleDelaySeconds'],
+          12,
+        );
+
+        // A save triggered after the automatic adjustment still writes the
+        // manual values.
+        settings.edgeModeIntensityStep.value = 0.06;
+        async.elapse(const Duration(milliseconds: 600));
+        expect(store.values[Settings.key]!['intensity'], 1.5);
+        expect(
+          store.values[Settings.key]!['edgeModeAutoToggleDelaySeconds'],
+          12,
+        );
+
+        // A restart returns to the manually persisted values.
+        final restarted = SettingsModel();
+        unawaited(restarted.load());
+        async.flushMicrotasks();
+        expect(restarted.intensity.value, 1.5);
+        expect(restarted.edgeModeAutoToggleDelaySeconds.value, 12);
+
+        unawaited(settings.dispose());
+        unawaited(restarted.dispose());
+      });
     });
   });
 }

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:syncopathy/model/funscript.dart';
 import 'package:syncopathy/model/json/funscript_json.dart';
@@ -86,5 +88,27 @@ void main() {
     test('past the last action clamps to the final index', () {
       expect(Funscript.getActionBefore(500, actions), 2);
     });
+  });
+
+  test('large payloads are parsed off the UI isolate', () async {
+    const actionCount = 60000;
+    final source = jsonEncode({
+      'version': '1.0',
+      'inverted': false,
+      'range': 100,
+      'actions': List.generate(
+        actionCount,
+        (i) => {'at': i * 10, 'pos': i % 100},
+      ),
+    });
+    // Comfortably above the isolate threshold, so this exercises the
+    // compute() path and its object transfer.
+    expect(source.length, greaterThan(200000));
+
+    final funscript = await Funscript.fromJsonString(source, 'large.funscript');
+    expect(funscript, isNotNull);
+    expect(funscript!.originalActions.length, actionCount);
+    expect(funscript.originalActions.first.at, 0);
+    expect(funscript.originalActions.last.at, (actionCount - 1) * 10);
   });
 }

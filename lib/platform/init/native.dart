@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
+import 'package:syncopathy/fullscreen_controller.dart';
 import 'package:syncopathy/ioc.dart';
 import 'package:syncopathy/logging.dart';
 import 'package:syncopathy/persistence/objectbox.dart';
@@ -25,6 +26,10 @@ class PlatformInit {
     }
     if (isDesktop()) {
       await windowManager.ensureInitialized();
+      // The OS can toggle fullscreen behind the app's back (window menu,
+      // external shortcut). Mirror those changes into the shared flag so the
+      // app bar, shortcut and video fullscreen page stay in sync.
+      windowManager.addListener(_fullscreenStateListener);
 
       WindowOptions windowOptions = const WindowOptions(
         center: true,
@@ -40,3 +45,15 @@ class PlatformInit {
     }
   }
 }
+
+class _WindowFullscreenStateListener with WindowListener {
+  @override
+  void onWindowEnterFullScreen() =>
+      fullscreenController.syncFromNativeWindow(true);
+
+  @override
+  void onWindowLeaveFullScreen() =>
+      fullscreenController.syncFromNativeWindow(false);
+}
+
+final _fullscreenStateListener = _WindowFullscreenStateListener();

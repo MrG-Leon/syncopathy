@@ -1,4 +1,5 @@
 import 'package:json_annotation/json_annotation.dart';
+import 'package:syncopathy/funscript_algo.dart';
 import 'package:syncopathy/heresphere/heresphere_mode.dart';
 import 'package:syncopathy/model/home_target.dart';
 import 'package:syncopathy/player/hwdec_mode.dart';
@@ -18,6 +19,9 @@ class Settings {
   bool remapFullRange;
   bool skipToAction;
   bool embeddedVideoPlayer;
+  /// Windows only: capture mpv's own `vo=gpu-next` window into a Flutter
+  /// texture so the embedded player can use mpv filters and RTX VSR.
+  bool useNativeMpvCapture;
   bool autoSwitchToVideoPlayerTab;
   bool invert;
   @JsonKey(unknownEnumValue: PlayerBackendType.handyStrokerStreamingBluetooth)
@@ -29,6 +33,41 @@ class Settings {
   @JsonKey(unknownEnumValue: HwdecMode.autoCopy)
   HwdecMode hwdecMode;
   Map<String, ShortcutBinding> customShortcuts = {};
+
+  // Per-stroke normalization (maximize every stroke to 0-100).
+  bool maximizeStrokeRange;
+
+  // Wave modulation.
+  bool waveModulationEnabled;
+  double waveReductionPercentage;
+  double wavePeriodSec;
+  WaveShape waveShape;
+
+  // Funscript processing: intensity multiplier (null = disabled).
+  double? intensity;
+
+  // Spline smoothing interval in ms (null = disabled).
+  int? pchipSmoothInterval;
+
+  // Edge Mode auto-toggle: the Edge Mode shortcut toggles Home Mode on, then
+  // it automatically toggles back off after this many seconds.
+  int edgeModeAutoToggleDelaySeconds;
+
+  // After each automatic Edge Mode toggle-back, reduce intensity by this
+  // fraction (0.05 = 5 percentage points of the intensity slider) and lengthen
+  // the next delay by this many seconds. Manual exits do not apply either.
+  double edgeModeIntensityStep;
+  int edgeModeDelayStepSeconds;
+
+  // Bounds at which the automatic adjustments stop. At or below the intensity
+  // floor no further reduction happens; at or above the delay ceiling no
+  // further increase happens.
+  double edgeModeIntensityFloor;
+  int edgeModeDelayCeilingSeconds;
+
+  // Path to the replacement funscript file used by the Replace Script shortcut.
+  String? replaceScriptPath;
+
   bool hereSphereEnabled;
   int hereSpherePort;
   String hereSphereBindAddress;
@@ -69,6 +108,7 @@ class Settings {
     this.remapFullRange = true,
     this.skipToAction = true,
     this.embeddedVideoPlayer = false,
+    this.useNativeMpvCapture = true,
     this.autoSwitchToVideoPlayerTab = false,
     this.invert = false,
     this.playerBackendType = PlayerBackendType.handyStrokerStreamingBluetooth,
@@ -78,6 +118,19 @@ class Settings {
     this.funscriptGraphEnabled = true,
     this.hwdecMode = HwdecMode.autoCopy,
     Map<String, ShortcutBinding> customShortcuts = const {},
+    this.maximizeStrokeRange = false,
+    this.waveModulationEnabled = false,
+    this.waveReductionPercentage = 82,
+    this.wavePeriodSec = 15,
+    this.waveShape = WaveShape.sine,
+    this.intensity,
+    this.pchipSmoothInterval,
+    this.edgeModeAutoToggleDelaySeconds = 30,
+    this.edgeModeIntensityStep = 0.05,
+    this.edgeModeDelayStepSeconds = 5,
+    this.edgeModeIntensityFloor = 0.0,
+    this.edgeModeDelayCeilingSeconds = 90,
+    this.replaceScriptPath,
     this.hereSphereEnabled = false,
     this.hereSpherePort = 9678,
     this.hereSphereBindAddress = '0.0.0.0',

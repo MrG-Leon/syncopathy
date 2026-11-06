@@ -15,6 +15,7 @@ class MediaKitPlayerImpl extends MediaKitVideoPlayer {
   /// player decodes in the browser, which exposes no equivalent knob.
   MediaKitPlayerImpl({
     required super.embeddedPlayer,
+    bool useNativeMpvCapture = false,
     ReadonlySignal<String>? hwdec,
   }) {
     player = Player(configuration: PlayerConfiguration(title: "syncopathy"));

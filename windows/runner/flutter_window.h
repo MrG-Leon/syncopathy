@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "mpv_capture_plugin.h"
 #include "win32_window.h"
 
 // A window that does nothing but host a Flutter view.
@@ -28,6 +29,9 @@ class FlutterWindow : public Win32Window {
 
   // The Flutter instance hosted by this window.
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
+
+  // Captures mpv's native gpu-next window into a Flutter GPU texture.
+  std::unique_ptr<MpvCapturePlugin> mpv_capture_plugin_;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

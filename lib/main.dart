@@ -12,6 +12,7 @@ import 'package:syncopathy/heresphere/media_library_source.dart';
 import 'package:syncopathy/ioc.dart';
 import 'package:syncopathy/logging.dart';
 import 'package:syncopathy/media_library/media_badge.dart';
+import 'package:syncopathy/media_library/media_library_state.dart';
 import 'package:syncopathy/media_library/media_manager.dart';
 
 import 'package:syncopathy/model/battery_model.dart';
@@ -55,6 +56,13 @@ Future<Widget> _initializeAppAndRun({required bool simple}) async {
     await filterPresets.load();
     getIt.registerSingleton<MediaFilterPresetsModel>(filterPresets);
 
+    // Shared by the Media tab and the fullscreen player's media library panel.
+    // Registered here, after the presets are loaded, so the active preset is
+    // applied exactly once at startup.
+    getIt.registerSingleton<MediaLibraryState>(
+      MediaLibraryState(filterPresets),
+    );
+
     mediaManager = MediaManager(settings);
     getIt.registerSingleton<MediaManager>(mediaManager);
   }
@@ -62,6 +70,10 @@ Future<Widget> _initializeAppAndRun({required bool simple}) async {
   var batteryModel = BatteryModel();
   var videoPlayer = MediaKitPlayerImpl(
     embeddedPlayer: settings.embeddedVideoPlayer.value,
+    useNativeMpvCapture:
+        !kIsWeb &&
+        defaultTargetPlatform == TargetPlatform.windows &&
+        settings.useNativeMpvCapture.value,
     hwdec: settings.effectiveHwdec,
   );
   getIt.registerSingleton<VideoPlayer>(videoPlayer);

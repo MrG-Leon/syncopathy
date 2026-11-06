@@ -8,6 +8,7 @@ void initPlaybackEngine() => throw UnimplementedError();
 class MediaKitPlayerImpl extends MediaKitVideoPlayer {
   MediaKitPlayerImpl({
     required super.embeddedPlayer,
+    bool useNativeMpvCapture = false,
     ReadonlySignal<String>? hwdec,
   });
   @override

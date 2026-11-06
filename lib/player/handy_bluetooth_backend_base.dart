@@ -29,6 +29,13 @@ abstract class HandyBluetoothBackendBase extends PlayerBackend
     return _handyBle.value?.hspState.value;
   });
 
+  /// Increments each time the Handy clock is re-synced (initial sync + any
+  /// later recalibrations). Observers (e.g. the HSP mixin) watch this to
+  /// trigger a re-sync after entering Home Mode or switching videos.
+  late final ReadonlySignal<int> clockCalibrationCount = computed(() {
+    return _handyBle.value?.calibrationCount.value ?? 0;
+  });
+
   Function(bool)? hspThresholdReachedHandler;
   Function()? hspLoopHandler;
 
@@ -210,4 +217,12 @@ abstract class HandyBluetoothBackendBase extends PlayerBackend
 
   @override
   IHspCommands? get hspCommandTarget => _handyBle.value;
+
+  /// Re-run Handy clock synchronization. Call this only when the device is in
+  /// a stable state (e.g. just entered Home Mode, or after switching videos)
+  /// to minimize jitter — the sample loop assumes the device isn't also
+  /// processing streaming script points.
+  Future<void> recalibrateClock({int syncTries = 5}) async {
+    await _handyBle.value?.calibrateClock(syncTries: syncTries);
+  }
 }

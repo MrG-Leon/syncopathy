@@ -24,6 +24,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
+  // Flutter 3.47 enables Impeller by default on Windows. Its OpenGL backend
+  // rasterizes the media_kit video texture quad as two triangles, and the
+  // shared diagonal edge can leave a 1px coverage gap that shows the black
+  // backdrop through the video at 1:1 fullscreen scale. Fall back to Skia;
+  // remove this line once the engine no longer exposes the seam.
+  project.set_impeller_switch(flutter::ImpellerSwitch::Disabled);
+
   FlutterWindow window(project);
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(1280, 720);

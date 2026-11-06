@@ -1,9 +1,9 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:signals/signals_flutter.dart';
+import 'package:syncopathy/fullscreen_controller.dart';
 import 'package:syncopathy/fullscreen_video_page.dart';
 import 'package:syncopathy/helper/constants.dart';
 import 'package:syncopathy/helper/effect_dispose_mixin.dart';
@@ -16,7 +16,6 @@ import 'package:syncopathy/player/playback_session.dart';
 import 'package:syncopathy/player/script_player_settings.dart';
 import 'package:syncopathy/player/video_player.dart';
 import 'package:syncopathy/scrolling_graph.dart';
-import 'package:syncopathy/simple/simple_mode/simple_mode.dart';
 import 'package:syncopathy/video_controls.dart';
 import 'package:syncopathy/settings_overlay.dart';
 
@@ -27,6 +26,17 @@ class VideoWidget extends StatefulWidget {
   final Signal<bool> showControls;
   final bool isFullscreen;
 
+  /// Provided by [FullscreenVideoPage] so every exit path from the fullscreen
+  /// route funnels through the page's single-shot exit guard (which also
+  /// restores the native window).
+  final VoidCallback? onRequestExitFullscreen;
+
+  /// Fullscreen-only affordance for opening the media library panel. Kept
+  /// inside this widget's hover region: a sibling button above the video
+  /// triggers `onExit` as the pointer crosses onto it, which auto-hides the
+  /// controls and makes the button impossible to click.
+  final VoidCallback? onOpenMediaLibrary;
+
   const VideoWidget({
     super.key,
     required this.player,
@@ -34,6 +44,8 @@ class VideoWidget extends StatefulWidget {
     required this.showFunscriptGraph,
     required this.showSettings,
     required this.showControls,
+    this.onRequestExitFullscreen,
+    this.onOpenMediaLibrary,
   });
 
   @override
@@ -48,6 +60,12 @@ class _VideoWidgetState extends State<VideoWidget> with EffectDispose {
   // timer instead of cancelling+recreating one per event. The 3s hide window
   // makes ~250ms of imprecision invisible.
   final Throttler _controlsThrottle = Throttler(milliseconds: 250);
+
+  // Fullscreen is a route transition plus a native window transition. A
+  // double-click on the button used to push two routes (or pop twice) before
+  // the first transition had rendered, leaving capture bounds aimed at a
+  // surface that was no longer current. Both directions are now one-shot.
+  bool _fullscreenRouteOpen = false;
 
   @override
   void initState() {
@@ -96,11 +114,15 @@ class _VideoWidgetState extends State<VideoWidget> with EffectDispose {
               !settings.embeddedVideoPlayer.value;
           final showSettings = widget.showSettings.value;
           final videoSurface = widget.player.buildVideoSurface();
+          // Read here, inside the tracked builder, rather than inside the
+          // LayoutBuilder below: reads made during layout are not observed, so
+          // a new video with a different aspect ratio would keep the previous
+          // video's letterboxing until some unrelated signal rebuilt the page.
+          final videoWidth = player.videoWidth.value;
+          final videoHeight = player.videoHeight.value;
 
           return LayoutBuilder(
             builder: (context, constraints) {
-              final videoWidth = player.videoWidth.value;
-              final videoHeight = player.videoHeight.value;
               final displayWidth = _computeDisplayWidth(
                 constraints,
                 videoWidth,
@@ -146,6 +168,15 @@ class _VideoWidgetState extends State<VideoWidget> with EffectDispose {
                             ),
                           ],
                         ),
+                        if (widget.onOpenMediaLibrary != null)
+                          // Shares the controls' auto-hide state: on an idle
+                          // mouse it disappears together with the bottom bar.
+                          // It sits inside this widget's MouseRegion, so moving
+                          // onto it counts as pointer activity and keeps both
+                          // visible until the pointer actually rests.
+                          _buildMediaLibraryButton(
+                            showControls && !showSettings,
+                          ),
                       ],
                     ),
                   ),
@@ -162,6 +193,48 @@ class _VideoWidgetState extends State<VideoWidget> with EffectDispose {
   void _onPointerActivity() {
     widget.showControls.value = true;
     _controlsThrottle.run(_startHideControlsTimer);
+  }
+
+  /// The fullscreen media-library affordance, anchored to the right edge.
+  ///
+  /// It lives inside this widget (and therefore inside the video's
+  /// [MouseRegion]) on purpose: as a sibling above the video, crossing onto it
+  /// fired the region's `onExit`, which hid the controls — and the button with
+  /// them — before a click could land.
+  Widget _buildMediaLibraryButton(bool visible) {
+    return Positioned(
+      top: 0,
+      bottom: 0,
+      right: 12.0,
+      child: Center(
+        child: AnimatedOpacity(
+          opacity: visible ? 1.0 : 0.0,
+          duration: const Duration(milliseconds: 200),
+          child: IgnorePointer(
+            ignoring: !visible,
+            child: Tooltip(
+              message: 'Media Library',
+              child: Material(
+                color: Colors.black54,
+                shape: const CircleBorder(),
+                clipBehavior: Clip.antiAlias,
+                child: InkWell(
+                  onTap: widget.onOpenMediaLibrary,
+                  child: const Padding(
+                    padding: EdgeInsets.all(12.0),
+                    child: Icon(
+                      Icons.video_library,
+                      color: Colors.white,
+                      size: 24,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   /// Tap toggles the controls — the touch equivalent of hover, since a tap
@@ -258,30 +331,51 @@ class _VideoWidgetState extends State<VideoWidget> with EffectDispose {
     );
   }
 
-  Future<void> _onFullscreenToggle(
+  void _onFullscreenToggle(
     BuildContext context,
     VideoPlayer player,
     SettingsModel settings,
-  ) async {
+  ) {
     if (widget.isFullscreen) {
-      if (!kIsWeb) await SimpleMode.exitFullscreen();
-      if (!context.mounted) return;
-      Navigator.pop(context);
+      // The fullscreen page owns the exit guard; fall back to a plain pop only
+      // if it did not supply one.
+      if (widget.onRequestExitFullscreen != null) {
+        widget.onRequestExitFullscreen!();
+      } else {
+        Navigator.pop(context);
+      }
     } else {
-      if (!kIsWeb) await SimpleMode.enterFullscreen();
-      if (!context.mounted) return;
-      Navigator.push(
+      if (_fullscreenRouteOpen) return;
+      _fullscreenRouteOpen = true;
+      // If the app is already fullscreen (global toggle), this route does not
+      // own the window state; leaving it must keep the window fullscreen.
+      final alreadyFullscreen = fullscreenController.isFullscreen.peek();
+      if (!alreadyFullscreen) {
+        unawaited(fullscreenController.enter());
+      }
+      final route = Navigator.push<void>(
         context,
-        MaterialPageRoute(
-          builder: (context) => FullscreenVideoPage(
-            player: player,
-            isEmbeddedPlayerEnabled: settings.embeddedVideoPlayer.value,
-            showControls: widget.showControls,
-            showFunscriptGraph: widget.showFunscriptGraph,
-            showSettings: widget.showSettings,
-          ),
+        PageRouteBuilder<void>(
+          // No cross-fade. The fullscreen page is opaque and covers the player
+          // page in the same frame, while a fade paints both pages at once —
+          // both draw the same captured texture laid out at different sizes,
+          // which is the ghost frame that showed up on every toggle. The
+          // route's own transition is also zero so the page cannot be semi-
+          // transparent for a frame.
+          transitionDuration: Duration.zero,
+          reverseTransitionDuration: Duration.zero,
+          pageBuilder: (context, animation, secondaryAnimation) =>
+              FullscreenVideoPage(
+                player: player,
+                isEmbeddedPlayerEnabled: settings.embeddedVideoPlayer.value,
+                showControls: widget.showControls,
+                showFunscriptGraph: widget.showFunscriptGraph,
+                showSettings: widget.showSettings,
+                ownsNativeFullscreen: !alreadyFullscreen,
+              ),
         ),
       );
+      unawaited(route.whenComplete(() => _fullscreenRouteOpen = false));
     }
   }
 

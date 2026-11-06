@@ -36,10 +36,197 @@ class Syncopathy extends StatelessWidget {
         textTheme: GoogleFonts.robotoTextTheme(
           ThemeData(brightness: Brightness.dark).textTheme,
         ),
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.blueAccent,
+        colorScheme: const ColorScheme(
           brightness: Brightness.dark,
+          primary: Color(0xFFE76F00),
+          onPrimary: Color(0xFFFFFFFF),
+          primaryContainer: Color(0xFFB85400),
+          onPrimaryContainer: Color(0xFFFFFFFF),
+          secondary: Color(0xFFE76F00),
+          onSecondary: Color(0xFFFFFFFF),
+          secondaryContainer: Color(0xFF3D1E00),
+          onSecondaryContainer: Color(0xFFFFFFFF),
+          tertiary: Color(0xFFE76F00),
+          onTertiary: Color(0xFFFFFFFF),
+          tertiaryContainer: Color(0xFF3D1E00),
+          onTertiaryContainer: Color(0xFFFFFFFF),
+          error: Color(0xFFC50500),
+          onError: Color(0xFFFFFFFF),
+          errorContainer: Color(0xFF8C0000),
+          onErrorContainer: Color(0xFFFFDAD4),
+          surface: Color(0xFF0D0D0D),
+          onSurface: Color(0xFFFFFFFF),
+          onSurfaceVariant: Color(0xFFB0B0B0),
+          outline: Color(0xFF4A4A4A),
+          outlineVariant: Color(0xFF2A2A2A),
+          inverseSurface: Color(0xFFE0E0E0),
+          onInverseSurface: Color(0xFF0D0D0D),
+          inversePrimary: Color(0xFFE76F00),
+          shadow: Color(0xFF000000),
+          scrim: Color(0xFF000000),
+          surfaceTint: Color(0xFFE76F00),
         ),
+        cardTheme: const CardThemeData(
+          color: Color(0xFF1A1A1A),
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(4.0)),
+            side: BorderSide(color: Color(0xFF2A2A2A), width: 1),
+          ),
+        ),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xFF0F0F0F),
+          foregroundColor: Colors.white,
+          surfaceTintColor: Colors.transparent,
+          elevation: 0,
+          shape: Border(bottom: BorderSide(color: Color(0xFF2A2A2A), width: 1)),
+          iconTheme: IconThemeData(color: Colors.white),
+          titleTextStyle: TextStyle(
+            color: Colors.white,
+            fontSize: 20,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        navigationBarTheme: NavigationBarThemeData(
+          backgroundColor: const Color(0xFF1A1A1A),
+          indicatorColor: const Color(0xFFE76F00),
+          surfaceTintColor: Colors.transparent,
+          elevation: 0,
+          labelTextStyle: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.selected)) {
+              return const TextStyle(color: Color(0xFFFFFFFF), fontSize: 12);
+            }
+            return const TextStyle(color: Color(0xFFB0B0B0), fontSize: 12);
+          }),
+          iconTheme: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.selected)) {
+              return const IconThemeData(color: Color(0xFFFFFFFF));
+            }
+            return const IconThemeData(color: Color(0xFFB0B0B0));
+          }),
+        ),
+        navigationRailTheme: NavigationRailThemeData(
+          backgroundColor: const Color(0xFF1A1A1A),
+          indicatorColor: const Color(0xFFE76F00),
+          elevation: 0,
+          selectedIconTheme: const IconThemeData(color: Color(0xFFFFFFFF)),
+          unselectedIconTheme: const IconThemeData(color: Color(0xFFB0B0B0)),
+          selectedLabelTextStyle: const TextStyle(
+            color: Color(0xFFFFFFFF),
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+          ),
+          unselectedLabelTextStyle: const TextStyle(
+            color: Color(0xFFB0B0B0),
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        dividerTheme: const DividerThemeData(
+          color: Color(0xFF2A2A2A),
+          thickness: 1,
+        ),
+        dialogTheme: const DialogThemeData(
+          backgroundColor: Color(0xFF1A1A1A),
+          surfaceTintColor: Colors.transparent,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(4.0)),
+            side: BorderSide(color: Color(0xFF2A2A2A), width: 1),
+          ),
+        ),
+        inputDecorationTheme: const InputDecorationTheme(
+          fillColor: Color(0xFF1A1A1A),
+          filled: true,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.all(Radius.circular(4.0)),
+            borderSide: BorderSide(color: Color(0xFF4A4A4A)),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.all(Radius.circular(4.0)),
+            borderSide: BorderSide(color: Color(0xFF4A4A4A)),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.all(Radius.circular(4.0)),
+            borderSide: BorderSide(color: Color(0xFFE76F00), width: 2),
+          ),
+        ),
+        popupMenuTheme: const PopupMenuThemeData(
+          color: Color(0xFF1A1A1A),
+          surfaceTintColor: Colors.transparent,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(4.0)),
+            side: BorderSide(color: Color(0xFF2A2A2A), width: 1),
+          ),
+        ),
+        dropdownMenuTheme: const DropdownMenuThemeData(
+          menuStyle: MenuStyle(
+            backgroundColor: WidgetStatePropertyAll(Color(0xFF1A1A1A)),
+            surfaceTintColor: WidgetStatePropertyAll(Colors.transparent),
+            shape: WidgetStatePropertyAll(
+              RoundedRectangleBorder(
+                borderRadius: BorderRadius.all(Radius.circular(4.0)),
+                side: BorderSide(color: Color(0xFF2A2A2A), width: 1),
+              ),
+            ),
+          ),
+        ),
+        listTileTheme: const ListTileThemeData(iconColor: Color(0xFFB0B0B0)),
+        switchTheme: SwitchThemeData(
+          thumbColor: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.selected)) {
+              return const Color(0xFFFFFFFF);
+            }
+            return const Color(0xFFB0B0B0);
+          }),
+          trackColor: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.selected)) {
+              return const Color(0xFFE76F00);
+            }
+            return const Color(0xFF4A4A4A);
+          }),
+        ),
+        sliderTheme: const SliderThemeData(
+          activeTrackColor: Color(0xFFE76F00),
+          inactiveTrackColor: Color(0xFF4A4A4A),
+          thumbColor: Color(0xFFFFFFFF),
+        ),
+        elevatedButtonTheme: ElevatedButtonThemeData(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFFE76F00),
+            foregroundColor: const Color(0xFFFFFFFF),
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(4.0),
+            ),
+          ),
+        ),
+        textButtonTheme: TextButtonThemeData(
+          style: TextButton.styleFrom(foregroundColor: const Color(0xFFE76F00)),
+        ),
+        chipTheme: const ChipThemeData(
+          backgroundColor: Color(0xFF1E1E1E),
+          side: BorderSide(color: Color(0xFF4A4A4A)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(16.0)),
+          ),
+        ),
+        bottomSheetTheme: const BottomSheetThemeData(
+          backgroundColor: Color(0xFF1A1A1A),
+          surfaceTintColor: Colors.transparent,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(4.0)),
+            side: BorderSide(color: Color(0xFF2A2A2A), width: 1),
+          ),
+        ),
+        tooltipTheme: TooltipThemeData(
+          decoration: BoxDecoration(
+            color: const Color(0xFF1A1A1A),
+            border: Border.all(color: const Color(0xFF2A2A2A)),
+            borderRadius: BorderRadius.circular(4.0),
+          ),
+          textStyle: const TextStyle(color: Color(0xFFFFFFFF)),
+        ),
+        scaffoldBackgroundColor: const Color(0xFF0D0D0D),
       ),
       home: const SyncopathyHomePage(title: 'Syncopathy'),
     );

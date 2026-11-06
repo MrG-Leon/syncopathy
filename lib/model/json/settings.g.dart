@@ -20,6 +20,7 @@ Settings _$SettingsFromJson(Map<String, dynamic> json) => Settings(
   remapFullRange: json['remapFullRange'] as bool? ?? true,
   skipToAction: json['skipToAction'] as bool? ?? true,
   embeddedVideoPlayer: json['embeddedVideoPlayer'] as bool? ?? false,
+  useNativeMpvCapture: json['useNativeMpvCapture'] as bool? ?? true,
   autoSwitchToVideoPlayerTab:
       json['autoSwitchToVideoPlayerTab'] as bool? ?? false,
   invert: json['invert'] as bool? ?? false,
@@ -49,6 +50,27 @@ Settings _$SettingsFromJson(Map<String, dynamic> json) => Settings(
             MapEntry(k, ShortcutBinding.fromJson(e as Map<String, dynamic>)),
       ) ??
       const {},
+  maximizeStrokeRange: json['maximizeStrokeRange'] as bool? ?? false,
+  waveModulationEnabled: json['waveModulationEnabled'] as bool? ?? false,
+  waveReductionPercentage:
+      (json['waveReductionPercentage'] as num?)?.toDouble() ?? 82,
+  wavePeriodSec: (json['wavePeriodSec'] as num?)?.toDouble() ?? 15,
+  waveShape:
+      $enumDecodeNullable(_$WaveShapeEnumMap, json['waveShape']) ??
+      WaveShape.sine,
+  intensity: (json['intensity'] as num?)?.toDouble(),
+  pchipSmoothInterval: (json['pchipSmoothInterval'] as num?)?.toInt(),
+  edgeModeAutoToggleDelaySeconds:
+      (json['edgeModeAutoToggleDelaySeconds'] as num?)?.toInt() ?? 30,
+  edgeModeIntensityStep:
+      (json['edgeModeIntensityStep'] as num?)?.toDouble() ?? 0.05,
+  edgeModeDelayStepSeconds:
+      (json['edgeModeDelayStepSeconds'] as num?)?.toInt() ?? 5,
+  edgeModeIntensityFloor:
+      (json['edgeModeIntensityFloor'] as num?)?.toDouble() ?? 0.0,
+  edgeModeDelayCeilingSeconds:
+      (json['edgeModeDelayCeilingSeconds'] as num?)?.toInt() ?? 90,
+  replaceScriptPath: json['replaceScriptPath'] as String?,
   hereSphereEnabled: json['hereSphereEnabled'] as bool? ?? false,
   hereSpherePort: (json['hereSpherePort'] as num?)?.toInt() ?? 9678,
   hereSphereBindAddress: json['hereSphereBindAddress'] as String? ?? '0.0.0.0',
@@ -83,6 +105,7 @@ Map<String, dynamic> _$SettingsToJson(Settings instance) => <String, dynamic>{
   'remapFullRange': instance.remapFullRange,
   'skipToAction': instance.skipToAction,
   'embeddedVideoPlayer': instance.embeddedVideoPlayer,
+  'useNativeMpvCapture': instance.useNativeMpvCapture,
   'autoSwitchToVideoPlayerTab': instance.autoSwitchToVideoPlayerTab,
   'invert': instance.invert,
   'playerBackendType': _$PlayerBackendTypeEnumMap[instance.playerBackendType]!,
@@ -92,6 +115,19 @@ Map<String, dynamic> _$SettingsToJson(Settings instance) => <String, dynamic>{
   'funscriptGraphEnabled': instance.funscriptGraphEnabled,
   'hwdecMode': _$HwdecModeEnumMap[instance.hwdecMode]!,
   'customShortcuts': instance.customShortcuts,
+  'maximizeStrokeRange': instance.maximizeStrokeRange,
+  'waveModulationEnabled': instance.waveModulationEnabled,
+  'waveReductionPercentage': instance.waveReductionPercentage,
+  'wavePeriodSec': instance.wavePeriodSec,
+  'waveShape': _$WaveShapeEnumMap[instance.waveShape]!,
+  'intensity': instance.intensity,
+  'pchipSmoothInterval': instance.pchipSmoothInterval,
+  'edgeModeAutoToggleDelaySeconds': instance.edgeModeAutoToggleDelaySeconds,
+  'edgeModeIntensityStep': instance.edgeModeIntensityStep,
+  'edgeModeDelayStepSeconds': instance.edgeModeDelayStepSeconds,
+  'edgeModeIntensityFloor': instance.edgeModeIntensityFloor,
+  'edgeModeDelayCeilingSeconds': instance.edgeModeDelayCeilingSeconds,
+  'replaceScriptPath': instance.replaceScriptPath,
   'hereSphereEnabled': instance.hereSphereEnabled,
   'hereSpherePort': instance.hereSpherePort,
   'hereSphereBindAddress': instance.hereSphereBindAddress,
@@ -123,6 +159,7 @@ const _$SettingsJsonSchema = {
     'remapFullRange': {'type': 'boolean', 'default': true},
     'skipToAction': {'type': 'boolean', 'default': true},
     'embeddedVideoPlayer': {'type': 'boolean', 'default': false},
+    'useNativeMpvCapture': {'type': 'boolean', 'default': true},
     'autoSwitchToVideoPlayerTab': {'type': 'boolean', 'default': false},
     'invert': {'type': 'boolean', 'default': false},
     'playerBackendType': {'type': 'object'},
@@ -136,6 +173,19 @@ const _$SettingsJsonSchema = {
       'additionalProperties': {r'$ref': r'#/$defs/ShortcutBinding'},
       'default': {},
     },
+    'maximizeStrokeRange': {'type': 'boolean', 'default': false},
+    'waveModulationEnabled': {'type': 'boolean', 'default': false},
+    'waveReductionPercentage': {'type': 'number', 'default': 82.0},
+    'wavePeriodSec': {'type': 'number', 'default': 15.0},
+    'waveShape': {'type': 'object'},
+    'intensity': {'type': 'number'},
+    'pchipSmoothInterval': {'type': 'integer'},
+    'edgeModeAutoToggleDelaySeconds': {'type': 'integer', 'default': 30},
+    'edgeModeIntensityStep': {'type': 'number', 'default': 0.05},
+    'edgeModeDelayStepSeconds': {'type': 'integer', 'default': 5},
+    'edgeModeIntensityFloor': {'type': 'number', 'default': 0.0},
+    'edgeModeDelayCeilingSeconds': {'type': 'integer', 'default': 90},
+    'replaceScriptPath': {'type': 'string'},
     'hereSphereEnabled': {'type': 'boolean', 'default': false},
     'hereSpherePort': {'type': 'integer', 'default': 9678},
     'hereSphereBindAddress': {'type': 'string', 'default': '0.0.0.0'},
@@ -200,4 +250,9 @@ const _$HwdecModeEnumMap = {
 const _$HereSphereDeviceOwnerEnumMap = {
   HereSphereDeviceOwner.syncopathy: 'syncopathy',
   HereSphereDeviceOwner.hereSphere: 'hereSphere',
+};
+
+const _$WaveShapeEnumMap = {
+  WaveShape.sine: 'sine',
+  WaveShape.triangle: 'triangle',
 };

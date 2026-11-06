@@ -66,7 +66,7 @@ class SimpleMode {
   ) async {
     final ext = p.extension(name).toLowerCase();
     if (ext == ".funscript") {
-      loadSimpleFunscript(playerModel, path, await readAsString());
+      await loadSimpleFunscript(playerModel, path, await readAsString());
     } else if (ext.length > 1 && allowedExtensions.contains(ext.substring(1))) {
       getIt.get<VideoPlayer>().openSingleVideo(
         buildSimpleModeMediaFile(name, path),

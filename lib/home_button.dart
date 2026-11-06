@@ -103,7 +103,7 @@ class _HomeButtonState extends State<HomeButton> {
             isSelected: enabled,
             icon: const Icon(Icons.home_outlined),
             selectedIcon: Icon(Icons.home, color: activeColor),
-            onPressed: () => settings.homeDeviceEnabled.value = !enabled,
+            onPressed: () => settings.toggleHomeDevice(edgeMode: false),
             tooltip: switch ((enabled, automatic)) {
               (true, true) =>
                 'Home Mode on automatically — playback is paused, so the '

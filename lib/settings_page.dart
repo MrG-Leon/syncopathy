@@ -88,6 +88,8 @@ class _SettingsPageState extends State<SettingsPage> {
         title: 'Video Player',
         children: [
           if (!kIsWeb) _buildEmbeddedVideoPlayerSettings(context),
+          if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows)
+            _buildNativeMpvCaptureSettings(context),
           if (!syncopathySimpleMode)
             _buildAutoSwitchToVideoPlayerTabSettings(context),
           _buildSkipToActionSettings(context),
@@ -106,10 +108,13 @@ class _SettingsPageState extends State<SettingsPage> {
         ],
       ),
       (context) => _buildSettingsCard(
-        context,
-        title: 'Shortcuts',
-        children: [_buildShortcutSettings(context)],
-      ),
+            context,
+            title: 'Shortcuts',
+            children: [
+              _buildShortcutSettings(context),
+              _buildReplaceScriptSettings(context),
+            ],
+          ),
       // Native only, and library only: it serves the indexed media library, so
       // it has nothing to publish in simple mode.
       if (!kIsWeb && !syncopathySimpleMode)
@@ -298,6 +303,57 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  Widget _buildReplaceScriptSettings(BuildContext context) {
+    final settings = context.read<SettingsModel>();
+    return SignalBuilder(
+      builder: (context) {
+        final path = settings.replaceScriptPath.value;
+        final fileName = path?.split(RegExp(r'[\\/]')).last;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Divider(),
+            ListTile(
+              leading: const Icon(Icons.swap_horiz),
+              title: const Text('Replace Script File'),
+              subtitle: Text(
+                fileName ?? 'No replacement script selected.',
+              ),
+              trailing: OutlinedButton.icon(
+                onPressed: () async {
+                  final files = await FilePicker.pickFiles(
+                    type: FileType.any,
+                  );
+                  if (files.isNotEmpty) {
+                    final filePath = files.single.path;
+                    if (filePath != null) {
+                      settings.replaceScriptPath.value = filePath;
+                    }
+                  }
+                },
+                icon: const Icon(Icons.folder_open, size: 18),
+                label: const Text('Browse'),
+              ),
+              isThreeLine: fileName == null,
+            ),
+            if (path != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Text(
+                  path,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+          ],
+        );
+      },
+    );
+  }
+
   Future<void> _showRebindDialog(
     BuildContext context,
     AppShortcut shortcut,
@@ -327,6 +383,26 @@ class _SettingsPageState extends State<SettingsPage> {
           settings.embeddedVideoPlayer.value = value;
         },
         secondary: const Icon(Icons.video_collection),
+        isThreeLine: true,
+      ),
+    );
+  }
+
+  Widget _buildNativeMpvCaptureSettings(BuildContext context) {
+    final settings = context.read<SettingsModel>();
+    return SignalBuilder(
+      builder: (context) => SwitchListTile(
+        title: const Text('Use mpv Native Capture'),
+        subtitle: const Text(
+          'Captures mpv\'s gpu-next output into the embedded player so mpv '
+          'filters and RTX VSR work. Requires Windows 10 1809+ and a restart. '
+          'HDR output is not preserved.',
+        ),
+        value: settings.useNativeMpvCapture.value,
+        onChanged: (value) {
+          settings.useNativeMpvCapture.value = value;
+        },
+        secondary: const Icon(Icons.screen_share),
         isThreeLine: true,
       ),
     );

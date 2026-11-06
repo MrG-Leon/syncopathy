@@ -16,6 +16,7 @@ import 'package:syncopathy/media_library/filter/media_filter_logic.dart';
 import 'package:syncopathy/media_library/filter/media_filter_preset.dart';
 import 'package:syncopathy/media_library/media_filter_overlay.dart';
 import 'package:syncopathy/media_library/matching/funscript_matching_page.dart';
+import 'package:syncopathy/media_library/media_library_state.dart';
 import 'package:syncopathy/media_library/media_badge.dart';
 import 'package:syncopathy/media_library/media_item.dart';
 import 'package:syncopathy/media_library/delete_media_dialog.dart';
@@ -33,7 +34,36 @@ import 'package:syncopathy/player/video_player.dart';
 import 'package:syncopathy/settings_overlay.dart';
 
 class MediaLibrary extends SignalStatefulWidget {
-  const MediaLibrary({super.key});
+  /// Whether the toolbar shows the index/refresh control. The fullscreen media
+  /// library panel keeps every other toolbar action but deliberately excludes
+  /// refreshing.
+  final bool showRefresh;
+
+  /// Wrapping, narrow-host toolbar used by the fullscreen slide-over panel so
+  /// every existing control stays reachable without horizontal overflow.
+  final bool compact;
+
+  /// Overrides the "media page is visible" check that suspends the filter
+  /// pipeline. The panel sits over the video page but must still react to
+  /// library changes, so it passes `true`.
+  final bool? isActive;
+
+  /// Called after a media item is opened (grid tap, playlist start or the
+  /// random picker), letting the host close a picker-style presentation.
+  final VoidCallback? onMediaOpen;
+
+  /// Upper bound for grid columns when the host is narrower than the room the
+  /// configured column count assumes.
+  final int? maxVideosPerRow;
+
+  const MediaLibrary({
+    super.key,
+    this.showRefresh = true,
+    this.compact = false,
+    this.isActive,
+    this.onMediaOpen,
+    this.maxVideosPerRow,
+  });
 
   @override
   State<MediaLibrary> createState() => _MediaLibraryState();
@@ -44,37 +74,40 @@ class _MediaLibraryState extends State<MediaLibrary> with EffectDispose {
   // seeds human-readable.
   static const int _randomSeedRange = 1000000;
 
+  // Shared with the fullscreen panel: both presentations must see the same
+  // filters, search, selection and sorting, and the state must survive the
+  // panel being closed and reopened.
+  late final MediaLibraryState _library = getIt.get<MediaLibraryState>();
+
   // filtered media
   late final ReadonlySignal<List<MediaFile>> filteredMedia = computed(
     _filterSignal,
   );
 
-  // filters
-  final MediaFilter mediaFilter = MediaFilter();
-  final Signal<String> searchQuery = signal("");
+  late final ReadonlySignal<bool> _isSelecting = computed(
+    () => _library.selectedVideos.isNotEmpty,
+  );
+
+  MediaFilter get mediaFilter => _library.mediaFilter;
+  Signal<String> get searchQuery => _library.searchQuery;
+  SetSignal<MediaFile> get selectedVideos => _library.selectedVideos;
+  Signal<bool> get isFiltering => _library.isFiltering;
+  Signal<int?> get randomSeed => _library.randomSeed;
+  Signal<int?> get _selectedCategoryFilter => _library.selectedCategoryFilter;
+
+  // Transient UI: the filter sheet belongs to one presentation at a time.
   final Signal<bool> _showFilterSettings = signal(false);
   late final MediaFilterPresetsModel filterPresets;
   late final ReadonlySignal<bool> isPresetDirty;
-
-  // selection
-  final SetSignal<MediaFile> selectedVideos = setSignal({});
-  late final ReadonlySignal<bool> _isSelecting = computed(() {
-    return selectedVideos.isNotEmpty;
-  });
-
-  // media manager is busy indexing
-  final Signal<bool> isFiltering = signal(false);
-
-  // Random seed for shuffle
-  final Signal<int?> randomSeed = signal(null);
 
   @override
   void initState() {
     super.initState();
 
     final mediaSettings = context.read<MediaLibrarySettingsModel>();
-    filterPresets = context.read<MediaFilterPresetsModel>();
-    filterPresets.activePreset.value?.snapshot.applyTo(mediaFilter);
+    filterPresets = _library.filterPresets;
+    // The active preset is applied once when MediaLibraryState is created, not
+    // here: a freshly opened panel must inherit the filters already in use.
     isPresetDirty = computed(() {
       mediaFilter.stateChange.value;
       final active = filterPresets.activePreset.value;
@@ -102,16 +135,13 @@ class _MediaLibraryState extends State<MediaLibrary> with EffectDispose {
   void dispose() {
     super.dispose();
     effectDispose();
-    // Previously owned by SignalsMixin. The computeds go first: they read the
-    // signals below and are dependents of long-lived model signals.
+    // Only the signals owned by this presentation are disposed. The filter,
+    // search, selection and shuffle seed are shared with the other
+    // MediaLibrary presentation and live until the app exits.
     filteredMedia.dispose();
     _isSelecting.dispose();
     isPresetDirty.dispose();
-    searchQuery.dispose();
     _showFilterSettings.dispose();
-    selectedVideos.dispose();
-    isFiltering.dispose();
-    randomSeed.dispose();
   }
 
   List<MediaFile> _filterSignal() {
@@ -120,7 +150,7 @@ class _MediaLibraryState extends State<MediaLibrary> with EffectDispose {
     // so DB writes during video playback (e.g. the view-count bump) don't re-run
     // filterAndSort or rebuild the off-screen grid on the UI thread. When the
     // page becomes visible again this recomputes once with fresh data.
-    if (activePageIndex.value != mediaPageIndex) {
+    if (!(widget.isActive ?? (activePageIndex.value == mediaPageIndex))) {
       return _lastFiltered;
     }
 
@@ -186,72 +216,125 @@ class _MediaLibraryState extends State<MediaLibrary> with EffectDispose {
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 8.0),
-        child: Row(
-          children: [
-            Expanded(
-              child: MediaSearchBar(
-                onFilterChanged: (query) => searchQuery.value = query,
-              ),
-            ),
-            const SizedBox(width: 8),
-            _buildSortMenu(context),
-            _buildSortDirectionButton(context),
-            const SizedBox(width: 8),
-            _buildFilterToggleButton(context),
-            const SizedBox(width: 8),
-            _buildViewOptionsMenu(context),
-            const SizedBox(width: 8),
-            IconButton(
-              tooltip: "Surprise Me!",
-              style: IconButton.styleFrom(
-                backgroundColor: colorScheme.onInverseSurface,
-              ),
-              icon: const Icon(Icons.attractions),
-              color: colorScheme.primary,
-              onPressed: _showRandomVideoPicker,
-            ),
-            const SizedBox(width: 8),
-            IconButton(
-              tooltip: "Start Playlist",
-              style: IconButton.styleFrom(
-                backgroundColor: colorScheme.onInverseSurface,
-              ),
-              color: colorScheme.primary,
-              icon: const Icon(Icons.playlist_play),
-              onPressed: _startPlaylist,
-            ),
-            const SizedBox(width: 8),
-            IconButton(
-              tooltip: "Match unmatched funscripts",
-              style: IconButton.styleFrom(
-                backgroundColor: colorScheme.onInverseSurface,
-              ),
-              color: colorScheme.primary,
-              icon: const Icon(Icons.link),
-              onPressed: () => Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => const FunscriptMatchingPage(),
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            _buildStatusText(context),
-            Tooltip(
-              message: 'Long-press or right-click an item for more options.',
-              child: Padding(
-                padding: const EdgeInsets.all(8.0),
-                child: Icon(
-                  Icons.info_outline,
-                  size: 16,
-                  color: colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            _buildRefreshButton(context),
-            const SizedBox(width: 4),
-          ],
+        child: widget.compact
+            ? _buildCompactToolbar(context)
+            : _buildWideToolbar(context),
+      ),
+    );
+  }
+
+  /// The Media tab's original single-row toolbar.
+  Widget _buildWideToolbar(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(child: _buildSearchBar()),
+        const SizedBox(width: 8),
+        _buildSortMenu(context),
+        _buildSortDirectionButton(context),
+        const SizedBox(width: 8),
+        _buildCategoryFilterChip(context),
+        const SizedBox(width: 8),
+        _buildFilterToggleButton(context),
+        const SizedBox(width: 8),
+        _buildViewOptionsMenu(context),
+        const SizedBox(width: 8),
+        _buildSurpriseButton(context),
+        const SizedBox(width: 8),
+        _buildStartPlaylistButton(context),
+        const SizedBox(width: 8),
+        _buildMatchingButton(context),
+        const SizedBox(width: 8),
+        _buildStatusText(context),
+        _buildHintIcon(context),
+        const SizedBox(width: 8),
+        if (widget.showRefresh) _buildRefreshButton(context),
+        const SizedBox(width: 4),
+      ],
+    );
+  }
+
+  /// Narrow-host toolbar for the fullscreen library panel: the same controls,
+  /// wrapped over multiple rows instead of overflowing horizontally.
+  Widget _buildCompactToolbar(BuildContext context) {
+    return Wrap(
+      spacing: 8.0,
+      runSpacing: 4.0,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        SizedBox(width: 220.0, child: _buildSearchBar()),
+        _buildSortMenu(context),
+        _buildSortDirectionButton(context),
+        _buildCategoryFilterChip(context),
+        _buildFilterToggleButton(context),
+        _buildViewOptionsMenu(context),
+        _buildSurpriseButton(context),
+        _buildStartPlaylistButton(context),
+        _buildMatchingButton(context),
+        _buildStatusText(context),
+        _buildHintIcon(context),
+        if (widget.showRefresh) _buildRefreshButton(context),
+      ],
+    );
+  }
+
+  Widget _buildSearchBar() {
+    return MediaSearchBar(
+      query: searchQuery,
+      onFilterChanged: (query) => searchQuery.value = query,
+    );
+  }
+
+  Widget _buildSurpriseButton(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return IconButton(
+      tooltip: "Surprise Me!",
+      style: IconButton.styleFrom(
+        backgroundColor: colorScheme.onInverseSurface,
+      ),
+      icon: const Icon(Icons.attractions),
+      color: colorScheme.primary,
+      onPressed: _showRandomVideoPicker,
+    );
+  }
+
+  Widget _buildStartPlaylistButton(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return IconButton(
+      tooltip: "Start Playlist",
+      style: IconButton.styleFrom(
+        backgroundColor: colorScheme.onInverseSurface,
+      ),
+      color: colorScheme.primary,
+      icon: const Icon(Icons.playlist_play),
+      onPressed: _startPlaylist,
+    );
+  }
+
+  Widget _buildMatchingButton(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return IconButton(
+      tooltip: "Match unmatched funscripts",
+      style: IconButton.styleFrom(
+        backgroundColor: colorScheme.onInverseSurface,
+      ),
+      color: colorScheme.primary,
+      icon: const Icon(Icons.link),
+      onPressed: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (context) => const FunscriptMatchingPage()),
+      ),
+    );
+  }
+
+  Widget _buildHintIcon(BuildContext context) {
+    return Tooltip(
+      message: 'Long-press or right-click an item for more options.',
+      child: Padding(
+        padding: const EdgeInsets.all(8.0),
+        child: Icon(
+          Icons.info_outline,
+          size: 16,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
         ),
       ),
     );
@@ -331,6 +414,104 @@ class _MediaLibraryState extends State<MediaLibrary> with EffectDispose {
           ? 'Randomize'
           : (isSortAscending ? 'Sorted Ascending' : 'Sorted Descending'),
     );
+  }
+
+  Widget _buildCategoryFilterChip(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final selectedCategoryId = _selectedCategoryFilter.value;
+
+    // Find the category name for display
+    String label;
+    if (selectedCategoryId == null) {
+      label = 'Category';
+    } else if (selectedCategoryId == kUncategorizedCategoryId) {
+      label = 'Uncategorized';
+    } else {
+      final category = oBox.userCategoryService.getById(selectedCategoryId);
+      label = category?.name ?? 'Category';
+    }
+
+    final isActive = selectedCategoryId != null;
+
+    return ActionChip(
+      avatar: Icon(
+        Icons.category_outlined,
+        size: 18,
+        color: isActive
+            ? colorScheme.onSecondaryContainer
+            : colorScheme.onSurfaceVariant,
+      ),
+      label: Text(
+        label,
+        style: TextStyle(
+          color: isActive ? colorScheme.onSecondaryContainer : null,
+        ),
+      ),
+      backgroundColor: isActive ? colorScheme.secondaryContainer : null,
+      side: isActive ? BorderSide.none : null,
+      onPressed: _showCategoryFilterDialog,
+    );
+  }
+
+  Future<void> _showCategoryFilterDialog() async {
+    final result = await showModalBottomSheet<int?>(
+      context: context,
+      isScrollControlled: true,
+      builder: (BuildContext context) {
+        return CategorySelectionDialog(
+          initialSelectedCategory: _selectedCategoryFilter.value != null
+              ? oBox.userCategoryService.getById(_selectedCategoryFilter.value!)
+              : null,
+          showAddCategory: true,
+          showAllCategoriesOption: true,
+          showUncategorizedOption: true,
+        );
+      },
+    );
+
+    // null = "All Categories" clicked, or dialog dismissed without selection
+    _selectedCategoryFilter.value = result;
+    _updateCategoryFilter(result);
+  }
+
+  void _updateCategoryFilter(int? categoryId) {
+    // Find or create a CategoryFilter in the default group
+    final defaultGroup = mediaFilter.defaultGroup;
+    CategoryFilter? categoryFilter;
+
+    // Look for existing CategoryFilter
+    for (final filter in defaultGroup.filters.value) {
+      if (filter is CategoryFilter) {
+        categoryFilter = filter;
+        break;
+      }
+    }
+
+    // If categoryId is null (All Categories), remove the filter
+    if (categoryId == null) {
+      if (categoryFilter != null) {
+        defaultGroup.filters.remove(categoryFilter);
+      }
+      return;
+    }
+
+    // Create new CategoryFilter if needed
+    if (categoryFilter == null) {
+      categoryFilter = CategoryFilter(
+        label: "Category",
+        icon: Icons.label,
+        category: FilterCategory.media,
+        sortOrder: 2,
+        retriever: (media) => media.categories.isEmpty
+            ? [kUncategorizedCategoryId]
+            : media.categories.map((c) => c.id).toList(),
+        categories: oBox.userCategoryService.getAllUserCategories(),
+      );
+      defaultGroup.filters.add(categoryFilter);
+    }
+
+    // Set the selected category
+    categoryFilter.selectedCategoryId.value = categoryId;
   }
 
   Widget _buildFilterToggleButton(BuildContext context) {
@@ -506,7 +687,10 @@ class _MediaLibraryState extends State<MediaLibrary> with EffectDispose {
 
   Widget _buildGrid(BuildContext context, List<MediaFile> mediaFiles) {
     final mediaSettings = context.read<MediaLibrarySettingsModel>();
-    final videosPerRow = mediaSettings.videosPerRow.value;
+    final configuredColumns = mediaSettings.videosPerRow.value;
+    final videosPerRow = widget.maxVideosPerRow == null
+        ? configuredColumns
+        : min(configuredColumns, widget.maxVideosPerRow!);
     final showTitle = mediaSettings.showVideoTitles.value;
     final badges = resolveBadges(mediaSettings.enabledBadges.value);
     final isSelecting = _isSelecting.value;
@@ -517,6 +701,11 @@ class _MediaLibraryState extends State<MediaLibrary> with EffectDispose {
     final selected = selectedVideos.value;
 
     return GridView.builder(
+      // Keeps the scroll offset per route: the fullscreen panel is rebuilt on
+      // every open, and PageStorage restores where the previous session left
+      // off. The Media tab lives in a different route bucket, so the two do not
+      // overwrite each other.
+      key: const PageStorageKey<String>('mediaLibraryGrid'),
       padding: const EdgeInsets.fromLTRB(0.0, 4.0, 0.0, 0.0),
       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: videosPerRow,
@@ -557,6 +746,7 @@ class _MediaLibraryState extends State<MediaLibrary> with EffectDispose {
                 return;
               }
               getIt.get<VideoPlayer>().openSingleVideo(media);
+              widget.onMediaOpen?.call();
             }
           },
           toggleDislike: () =>
@@ -803,6 +993,7 @@ class _MediaLibraryState extends State<MediaLibrary> with EffectDispose {
     }
     if (!mounted) return;
     getIt.get<VideoPlayer>().openMultipleVideos(playlistVideos);
+    widget.onMediaOpen?.call();
   }
 
   void _showRandomVideoPicker() {
@@ -838,6 +1029,7 @@ class _MediaLibraryState extends State<MediaLibrary> with EffectDispose {
           mediaFiles: availableVideos,
           onMediaSelected: (media) {
             getIt.get<VideoPlayer>().openSingleVideo(media);
+            widget.onMediaOpen?.call();
           },
         );
       },

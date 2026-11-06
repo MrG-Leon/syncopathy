@@ -85,6 +85,13 @@ class PlayerModel with EffectDispose {
     milliseconds: _viewCountDebounceMs,
   );
 
+  // Replacement script state.
+  bool _replacementScriptActive = false;
+  MediaFile? _mediaAtReplacementStart;
+  final Signal<int> _reloadBump = signal(0);
+
+  bool get isReplacementActive => _replacementScriptActive;
+
   PlayerModel(
     this._settings,
     this.timeSource,
@@ -134,6 +141,13 @@ class PlayerModel with EffectDispose {
         final backendType = _settings.playerBackendType.value;
         untracked(() async => await _updateBackend(backendType, _batteryModel));
       }),
+      // Revert replacement script when media changes.
+      effect(() {
+        final media = _session.value.currentMedia.value;
+        if (_replacementScriptActive && media != _mediaAtReplacementStart) {
+          revertToOriginalScript();
+        }
+      }),
       _autoHomeOnPauseEffect(),
     ]);
   }
@@ -173,6 +187,92 @@ class PlayerModel with EffectDispose {
     }, leading: true);
   }
 
+  /// Loads a funscript from [filePath] and replaces the current script,
+  /// bypassing Slew Rate Limit, Remap to full range, Maximize Stroke Range,
+  /// and Wave Modulation. All action timestamps are offset so the script
+  /// starts from time 0 at the current video position. The replacement is
+  /// temporary: pressing the shortcut again, or switching media, reverts.
+  Future<void> loadReplacementScript(String filePath) async {
+    try {
+      final funscript = await Funscript.fromFile(filePath);
+
+      if (funscript?.likelyScriptToken ?? false) {
+        Logger.warning("Script token playback is not supported.");
+        return;
+      }
+      if (funscript == null) return;
+
+      final session = _session.value;
+      final totalDuration = session.duration.value;
+      if (totalDuration == null || totalDuration < _minValidDurationSeconds) {
+        _currentlyOpen.value = null;
+        return;
+      }
+
+      // Offset so the script starts at time 0 from the current video position.
+      final offsetMs = (session.smoothPosition.value * 1000).round();
+
+      // Build processing params that bypass the disabled transforms.
+      final invert = _settings.invert.value;
+      final intensity = _settings.intensity.value;
+      final playbackSpeed = session.playbackSpeed.value;
+      final strokeRange = _settings.minMaxRange.value;
+      final rdpEpsilon = _settings.rdpEpsilon.value;
+      final smoothIntervalMs = _settings.pchipSmoothInterval.value;
+
+      final params = FunscriptProcessParams(
+        actions: funscript.originalActions,
+        invert: invert,
+        intensity: intensity,
+        totalDuration: totalDuration,
+        playbackSpeed: playbackSpeed,
+        strokeRange: strokeRange,
+        rdpEpsilon: rdpEpsilon < 0 ? null : rdpEpsilon,
+        smoothIntervalMs: smoothIntervalMs,
+        // Explicitly bypassed:
+        slewMaxRateOfChangePerSecond: null,
+        remapRange: null,
+        maximizeStrokeRangeEnabled: false,
+        waveModulation: null,
+      );
+
+      // Process directly (not through the debounced _processFunscript) so we
+      // can apply the time offset before setting the result.
+      final modifiedActions = await compute(
+        FunscriptAlgorithms.processForHandy,
+        params,
+      );
+
+      // Offset every action timestamp so the script begins at time 0 relative
+      // to the current video position. The backend continues to use
+      // smoothPosition as-is and naturally finds the right action.
+      final offsetActions = modifiedActions
+          .map((a) => FunscriptAction(at: a.at + offsetMs, pos: a.pos))
+          .toList();
+
+      funscript.processedActions.value = offsetActions;
+
+      _replacementScriptActive = true;
+      _mediaAtReplacementStart = session.currentMedia.value;
+      final media = session.currentMedia.value;
+      _currentlyOpen.value = media == null
+          ? null
+          : MediaFunscript(media: media, funscript: funscript);
+    } catch (e, st) {
+      Logger.error("Failed to load replacement script", e, st);
+    }
+  }
+
+  /// Reverts to the original script loaded from the current media. Clears the
+  /// replacement state and bumps [_reloadBump] so [regularEffects] picks up
+  /// the original funscript and reprocesses it with normal settings.
+  void revertToOriginalScript() {
+    _replacementScriptActive = false;
+    _mediaAtReplacementStart = null;
+    _currentlyOpen.value = null;
+    _reloadBump.value = _reloadBump.value + 1;
+  }
+
   /// Reads every processing-relevant setting (plus the current playback speed)
   /// synchronously so the surrounding effect tracks them, and returns a builder
   /// that turns a script's actions + duration into [FunscriptProcessParams].
@@ -191,6 +291,11 @@ class PlayerModel with EffectDispose {
     final rdpEpsilon = _settings.rdpEpsilon.value;
     final remapFullRange = _settings.remapFullRange.value;
     final smoothIntervalMs = _settings.pchipSmoothInterval.value;
+    final maximizeStrokeRangeEnabled = _settings.maximizeStrokeRange.value;
+    final waveModulationEnabled = _settings.waveModulationEnabled.value;
+    final waveReductionPercentage = _settings.waveReductionPercentage.value;
+    final wavePeriodSec = _settings.wavePeriodSec.value;
+    final waveShape = _settings.waveShape.value;
 
     return (actions, duration) => FunscriptProcessParams(
       actions: actions,
@@ -205,6 +310,15 @@ class PlayerModel with EffectDispose {
       rdpEpsilon: rdpEpsilon < 0 ? null : rdpEpsilon,
       remapRange: remapFullRange ? (0, 100) : null,
       smoothIntervalMs: smoothIntervalMs,
+      maximizeStrokeRangeEnabled: maximizeStrokeRangeEnabled,
+      waveModulation: waveModulationEnabled
+          ? WaveModulationSettings(
+              enabled: true,
+              reductionPercentage: waveReductionPercentage,
+              periodSec: wavePeriodSec,
+              shape: waveShape,
+            )
+          : null,
     );
   }
 
@@ -251,6 +365,10 @@ class PlayerModel with EffectDispose {
       effect(() async {
         final session = _session.value;
         final media = session.currentMedia.value;
+        _reloadBump.value; // track for revert trigger
+        // Skip script loading while replacement script is active.
+        if (_replacementScriptActive) return;
+
         final index = selectedFunscriptIndex.value;
         final totalDuration = session.duration.value;
         final buildParams = _snapshotProcessParams(session);

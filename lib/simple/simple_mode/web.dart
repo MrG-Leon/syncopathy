@@ -136,7 +136,7 @@ class SimpleMode {
   ) async {
     final ext = p.extension(name).toLowerCase();
     if (ext == ".funscript") {
-      loadSimpleFunscript(playerModel, path, await readAsString());
+      await loadSimpleFunscript(playerModel, path, await readAsString());
     } else {
       if (mimeType != null && !_canPlayVideo(mimeType)) {
         AlertManager.showError("Can't play $name");

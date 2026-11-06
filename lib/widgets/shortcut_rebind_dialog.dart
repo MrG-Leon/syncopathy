@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -7,6 +8,11 @@ import 'package:syncopathy/model/shortcut_settings.dart';
 class ShortcutRebindDialog extends StatefulWidget {
   final AppShortcut shortcut;
   const ShortcutRebindDialog({super.key, required this.shortcut});
+
+  /// True while a rebind dialog is open. The global mouse shortcut listener
+  /// (global_shortcuts.dart) checks this so a button press being captured in
+  /// the dialog doesn't ALSO fire the currently bound shortcut underneath.
+  static bool isCapturing = false;
 
   @override
   State<ShortcutRebindDialog> createState() => _ShortcutRebindDialogState();
@@ -23,11 +29,13 @@ class _ShortcutRebindDialogState extends State<ShortcutRebindDialog> {
   @override
   void initState() {
     super.initState();
+    ShortcutRebindDialog.isCapturing = true;
     _focusNode.requestFocus();
   }
 
   @override
   void dispose() {
+    ShortcutRebindDialog.isCapturing = false;
     _focusNode.dispose();
     super.dispose();
   }
@@ -65,6 +73,35 @@ class _ShortcutRebindDialogState extends State<ShortcutRebindDialog> {
     });
   }
 
+  /// Captures side mouse buttons and the middle button as triggers. The
+  /// primary button is ignored so normal dialog interaction (clicking Save,
+  /// dragging the title bar) keeps working; left/right click simply isn't
+  /// bindable. Modifiers reflect whatever keys are held at press time, so
+  /// e.g. Ctrl+Mouse Back is capturable.
+  void _handlePointer(PointerDownEvent event) {
+    final String? button;
+    final b = event.buttons;
+    if (b & kMiddleMouseButton != 0) {
+      button = MouseButtons.middle;
+    } else if (b & kBackMouseButton != 0) {
+      button = MouseButtons.back;
+    } else if (b & kForwardMouseButton != 0) {
+      button = MouseButtons.forward;
+    } else {
+      return; // primary/secondary/stylus etc. — not bindable
+    }
+
+    setState(() {
+      _captured = ShortcutBinding.mouse(
+        button!,
+        control: HardwareKeyboard.instance.isControlPressed,
+        shift: HardwareKeyboard.instance.isShiftPressed,
+        alt: HardwareKeyboard.instance.isAltPressed,
+        meta: HardwareKeyboard.instance.isMetaPressed,
+      );
+    });
+  }
+
   /// The name of another shortcut already bound to [binding], or null if the
   /// combination is free. Compares against each shortcut's effective binding
   /// (custom override, falling back to its default).
@@ -90,11 +127,13 @@ class _ShortcutRebindDialogState extends State<ShortcutRebindDialog> {
         ? null
         : _conflictName(settings, captured);
 
-    return KeyboardListener(
-      focusNode: _focusNode,
-      autofocus: true,
-      onKeyEvent: _handleKey,
-      child: AlertDialog(
+    return Listener(
+      onPointerDown: _handlePointer,
+      child: KeyboardListener(
+        focusNode: _focusNode,
+        autofocus: true,
+        onKeyEvent: _handleKey,
+        child: AlertDialog(
         title: Text('Rebind ${widget.shortcut.name}'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -159,6 +198,7 @@ class _ShortcutRebindDialogState extends State<ShortcutRebindDialog> {
             child: const Text('Save'),
           ),
         ],
+        ),
       ),
     );
   }

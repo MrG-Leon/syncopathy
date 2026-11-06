@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:collection/collection.dart';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:path/path.dart' as p;
 import 'package:signals/signals_flutter.dart';
 import 'package:syncopathy/funscript_algo.dart';
@@ -76,9 +77,45 @@ class Funscript {
     return Funscript(json: json, filePath: path);
   }
 
-  static Future<Funscript?> fromFile(String path) async {
+  /// Scripts above this size are decoded off the UI isolate. Below it, isolate
+  /// startup costs more than the parse itself.
+  static const int _isolateParseThresholdBytes = 200000;
+
+  static FunscriptJson _parseJsonOffUiThread(String jsonString) {
+    return FunscriptJson.fromJson(
+      jsonDecode(jsonString) as Map<String, dynamic>,
+    );
+  }
+
+  /// Decodes a funscript payload without blocking the UI isolate when the
+  /// script is large. Switching videos can otherwise stall a frame (or longer)
+  /// while a multi-megabyte JSON document is parsed and turned into actions.
+  static Future<Funscript?> fromJsonString(
+    String jsonString,
+    String path,
+  ) async {
+    final json = jsonString.length >= _isolateParseThresholdBytes
+        ? await compute(_parseJsonOffUiThread, jsonString)
+        : _parseJsonOffUiThread(jsonString);
+    return Funscript(json: json, filePath: path);
+  }
+
+  /// Loads already in flight, keyed by path.
+  ///
+  /// Switching videos can ask for the same script twice: the media effect runs
+  /// once when the track changes and again when mpv reports the new duration,
+  /// and the first attempt is dropped as stale. Sharing the pending load keeps
+  /// a multi-megabyte script from being read and parsed twice for one switch.
+  static final Map<String, Future<Funscript?>> _loadsInFlight = {};
+
+  static Future<Funscript?> fromFile(String path) {
+    return _loadsInFlight[path] ??= _readFile(path).whenComplete(() {
+      _loadsInFlight.remove(path);
+    });
+  }
+
+  static Future<Funscript?> _readFile(String path) async {
     final jsonString = await File(path).readAsString();
-    final json = jsonDecode(jsonString);
-    return fromJson(json, path);
+    return fromJsonString(jsonString, path);
   }
 }

@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:syncopathy/model/funscript.dart';
 import 'package:syncopathy/model/player_model.dart';
 import 'package:syncopathy/notification_feed.dart';
@@ -11,9 +9,16 @@ import 'package:syncopathy/persistence/entities/media_file.dart';
 
 /// Decodes a funscript JSON payload and assigns it as the active simple-mode
 /// script, or reports an error if it is a script token or fails to parse.
-void loadSimpleFunscript(PlayerModel playerModel, String path, String json) {
+/// The returned future completes once the script is assigned; large payloads
+/// are decoded off the UI isolate by [Funscript.fromJsonString].
+Future<void> loadSimpleFunscript(
+  PlayerModel playerModel,
+  String path,
+  String json,
+) async {
   try {
-    final funscript = Funscript.fromJson(jsonDecode(json), path);
+    final funscript = await Funscript.fromJsonString(json, path);
+    if (funscript == null) return;
     if (!funscript.likelyScriptToken) {
       playerModel.simpleModeFunscript.value = funscript;
     } else {

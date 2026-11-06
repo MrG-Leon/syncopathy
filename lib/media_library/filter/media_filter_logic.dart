@@ -17,7 +17,8 @@ enum SortOption {
 enum VideoFilter {
   hideFavorite('Hide Favorite'),
   hideDisliked('Hide Disliked'),
-  hideUnrated('Hide Unrated');
+  hideUnrated('Hide Unrated'),
+  hidePlayed('Hide Played');
 
   const VideoFilter(this.label);
   final String label;
@@ -37,6 +38,7 @@ class MediaFilterLogic {
     final hideFavorite = visibilityFilters.contains(VideoFilter.hideFavorite);
     final hideDisliked = visibilityFilters.contains(VideoFilter.hideDisliked);
     final hideUnrated = visibilityFilters.contains(VideoFilter.hideUnrated);
+    final hidePlayed = visibilityFilters.contains(VideoFilter.hidePlayed);
     final groupsWithFilters = customFilter.filterGroups
         .where((g) => g.filters.isNotEmpty)
         .toList();
@@ -46,6 +48,7 @@ class MediaFilterLogic {
       if (hideFavorite && m.isFavorite) return false;
       if (hideDisliked && m.isDislike) return false;
       if (hideUnrated && m.rating == MediaRating.noRating) return false;
+      if (hidePlayed && m.playCount > 0) return false;
 
       // Custom Filters
       for (var group in groupsWithFilters) {

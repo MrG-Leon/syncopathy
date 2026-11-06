@@ -155,9 +155,26 @@ class HandyBle with EffectDispose implements IHspCommands {
   Timer? _batteryPolling;
 
   late final ReadonlySignal<bool> isConnected;
+  final Signal<bool> _isConnected = signal(true);
+  // BLE stacks can emit brief false disconnects. Delay false updates to
+  // prevent UI flapping while keeping true updates immediate.
+  static const Duration _disconnectDebounce = Duration(milliseconds: 1200);
+  static const Duration _manualDisconnectAckTimeout = Duration(seconds: 3);
+  Timer? _disconnectDebounceTimer;
+  bool _waitingForManualDisconnectAck = false;
+  Completer<void>? _manualDisconnectAckCompleter;
+  // Set once the device stream has reported a disconnect (routed into the
+  // debounce path). After this the status callback will never fire again, so
+  // dispose() can complete its disconnect ack locally instead of waiting out
+  // the timeout.
+  bool _disconnectEventSeen = false;
 
   final Signal<int> _strokeRangeMin;
   final Signal<int> _strokeRangeMax;
+
+  // Increments each time the clock sync runs (initial + recalibrations) so
+  // observers can react to "the device clock was just re-synced".
+  final Signal<int> calibrationCount = signal(0);
 
   // Called when threshold is reached or starving
   Function(bool)? hspThresholdReached; // bool = starving
@@ -169,13 +186,40 @@ class HandyBle with EffectDispose implements IHspCommands {
   late final StreamSubscription _bufferReceivedSubscription;
   late final StreamSubscription _deserializeSubscription;
   late final StreamSubscription _serializeSubscription;
+  late final StreamSubscription _connectionSubscription;
   final ProtobufWorker _worker = ProtobufWorker();
 
   final _applyStrokeRangeDebouncer = Debouncer(milliseconds: 500);
   int estimatedAverageOffset = 0;
+  bool _isClockSyncing = false;
 
   HandyBle(this._device, this._strokeRangeMin, this._strokeRangeMax) {
-    isConnected = _device.device.connectionStream.toSyncSignal(true);
+    isConnected = _isConnected;
+    _connectionSubscription = _device.device.connectionStream.listen(
+      (connected) {
+        // BLE stacks can emit brief false disconnects. Delay false updates to
+        // prevent UI flapping while keeping true updates immediate.
+        if (connected) {
+          _disconnectDebounceTimer?.cancel();
+          _disconnectDebounceTimer = null;
+          _isConnected.value = true;
+        } else {
+          if (_waitingForManualDisconnectAck) {
+            _disconnectDebounceTimer?.cancel();
+            _disconnectDebounceTimer = null;
+            _isConnected.value = false;
+            _manualDisconnectAckCompleter?.complete();
+            return;
+          }
+          _disconnectEventSeen = true;
+          _disconnectDebounceTimer?.cancel();
+          _disconnectDebounceTimer = Timer(_disconnectDebounce, () {
+            _disconnectDebounceTimer = null;
+            _isConnected.value = false;
+          });
+        }
+      },
+    );
     _bufferReceivedSubscription = _device.rx.onValueReceived.listen(
       _bufferReceived,
     );
@@ -228,28 +272,47 @@ class HandyBle with EffectDispose implements IHspCommands {
       }
     }
 
-    // Sync time
-    {
-      final sync = await aggregateClockSync(
-        tries: 10,
-        delay: const Duration(milliseconds: 100),
-        sample: () async {
-          final start = DateTime.now().millisecondsSinceEpoch;
-          await getClockOffset();
-          final server = DateTime.now().millisecondsSinceEpoch;
-          final end = server;
-          final rtd = end - start;
-          return (rtd: rtd, offset: (server + (rtd / 2.0)) - end);
-        },
-      );
-      estimatedAverageOffset = sync.averageOffset;
-      final averageRtd = sync.averageRtd;
-      Logger.debug(
-        "Estimated average offset: $estimatedAverageOffset RTD: $averageRtd",
-      );
-      final offset = await getClockOffset();
-      final clockOffset = serverTime() - offset!.time;
-      await setClockOffset(clockOffset, rtd: averageRtd);
+    // Sync time (initial).
+    await _syncClockTime();
+  }
+
+  /// Runs the clock offset sampling loop and pushes the result to the device.
+  /// Increments [calibrationCount] on success so observers can react.
+  Future<void> _syncClockTime({int syncTries = 10}) async {
+    final sync = await aggregateClockSync(
+      tries: syncTries,
+      delay: const Duration(milliseconds: 100),
+      sample: () async {
+        final start = DateTime.now().millisecondsSinceEpoch;
+        await getClockOffset();
+        final server = DateTime.now().millisecondsSinceEpoch;
+        final end = server;
+        final rtd = end - start;
+        return (rtd: rtd, offset: (server + (rtd / 2.0)) - end);
+      },
+    );
+    estimatedAverageOffset = sync.averageOffset;
+    final averageRtd = sync.averageRtd;
+    Logger.debug(
+      "Estimated average offset: $estimatedAverageOffset RTD: $averageRtd",
+    );
+    final offset = await getClockOffset();
+    final clockOffset = serverTime() - offset!.time;
+    await setClockOffset(clockOffset, rtd: averageRtd);
+    calibrationCount.value += 1;
+  }
+
+  /// Re-run the clock synchronization. Intended to be called in stable device
+  /// states (e.g. when entering Home Mode, or after switching videos) to
+  /// minimize drift. Guarded by [_isClockSyncing] so overlapping calls are
+  /// dropped rather than queued.
+  Future<void> calibrateClock({int syncTries = 5}) async {
+    if (_isClockSyncing) return;
+    _isClockSyncing = true;
+    try {
+      await _syncClockTime(syncTries: syncTries);
+    } finally {
+      _isClockSyncing = false;
     }
   }
 
@@ -369,7 +432,36 @@ class HandyBle with EffectDispose implements IHspCommands {
   Future<void> dispose() async {
     effectDispose();
     _batteryPolling?.cancel();
+    _disconnectDebounceTimer?.cancel();
+    _waitingForManualDisconnectAck = true;
+    _manualDisconnectAckCompleter = Completer<void>();
     try {
+      await Future.delayed(const Duration(milliseconds: 300));
+      await _device.device.disconnect();
+      // If the device already reported a disconnect, the status callback was
+      // consumed by the debounce path and will never fire again — complete
+      // the ack locally instead of stalling until the timeout. This keeps
+      // teardown (and thus auto-reconnect) fast after a real connection loss.
+      if (_disconnectEventSeen) {
+        _disconnectDebounceTimer?.cancel();
+        _disconnectDebounceTimer = null;
+        _isConnected.value = false;
+        _manualDisconnectAckCompleter?.complete();
+      }
+      // Manual disconnect must be reflected by the device status callback
+      // first; wait for the ack so _isConnected flips to false cleanly
+      // rather than racing the debounce timer.
+      try {
+        await _manualDisconnectAckCompleter!.future.timeout(
+          _manualDisconnectAckTimeout,
+        );
+      } on TimeoutException {
+        Logger.warning(
+          "Timed out waiting for BLE disconnect ack from device stream.",
+        );
+      }
+
+      await _connectionSubscription.cancel();
       await _device.rx.notifications.unsubscribe();
       await _device.rx.unsubscribe();
 
@@ -377,11 +469,11 @@ class HandyBle with EffectDispose implements IHspCommands {
       await _deserializeSubscription.cancel();
       await _serializeSubscription.cancel();
       await _worker.dispose();
-
-      await Future.delayed(const Duration(milliseconds: 300));
-      await _device.device.disconnect();
     } catch (e) {
       debugPrint("Error during BLE dispose: $e");
+    } finally {
+      _waitingForManualDisconnectAck = false;
+      _manualDisconnectAckCompleter = null;
     }
   }
 

@@ -3,6 +3,24 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:syncopathy/model/json/funscript_json.dart';
 
+/// Wave shape used by [FunscriptAlgorithms.waveModulate].
+enum WaveShape { sine, triangle }
+
+/// Configuration for funscript wave modulation.
+class WaveModulationSettings {
+  final bool enabled;
+  final double reductionPercentage; // 0-100
+  final double periodSec; // duration of one full wave cycle
+  final WaveShape shape;
+
+  const WaveModulationSettings({
+    required this.enabled,
+    required this.reductionPercentage,
+    required this.periodSec,
+    required this.shape,
+  });
+}
+
 class FunscriptProcessParams {
   final List<FunscriptAction> actions;
   final double? slewMaxRateOfChangePerSecond;
@@ -14,6 +32,8 @@ class FunscriptProcessParams {
   final RangeValues strokeRange;
   final int? smoothIntervalMs;
   final double? intensity;
+  final bool maximizeStrokeRangeEnabled;
+  final WaveModulationSettings? waveModulation;
 
   FunscriptProcessParams({
     required this.actions,
@@ -26,6 +46,8 @@ class FunscriptProcessParams {
     required this.strokeRange,
     this.smoothIntervalMs,
     this.intensity,
+    this.maximizeStrokeRangeEnabled = false,
+    this.waveModulation,
   });
 }
 
@@ -38,6 +60,105 @@ class FunscriptAlgorithms {
   static const int _pchipMaxIntermediatePoints = 5;
   // RDP tolerance (pos) used to thin the points smoothing inserts.
   static const double _postSmoothRdpEpsilon = 1.0;
+
+  /// Per-stroke normalization: stretches every stroke (segment between
+  /// inflection points) so its peaks hit 100 and valleys hit 0, preserving
+  /// transition shapes. Flat segments (range == 0) are mapped to 0.
+  ///
+  /// Ported from FunscriptWaveModulator_dev/utils/funscriptUtils.ts
+  /// (getNormalizedActions).
+  static List<FunscriptAction> maximizeStrokeRange(
+    List<FunscriptAction> actions,
+  ) {
+    if (actions.isEmpty) return [];
+    if (actions.length == 1) {
+      return [FunscriptAction(at: actions[0].at, pos: 50)];
+    }
+
+    // 1. Identify inflection points (indices where direction changes,
+    //    plus start/end).
+    final inflectionIndices = <int>[0];
+    int lastDirection = 0; // 1 = up, -1 = down, 0 = flat
+    for (int i = 1; i < actions.length; i++) {
+      final diff = actions[i].pos - actions[i - 1].pos;
+      final currentDirection = diff > 0 ? 1 : (diff < 0 ? -1 : 0);
+      if (currentDirection != 0) {
+        if (lastDirection != 0 && currentDirection != lastDirection) {
+          inflectionIndices.add(i - 1);
+        }
+        lastDirection = currentDirection;
+      }
+    }
+    inflectionIndices.add(actions.length - 1);
+
+    // 2. Normalize segments between inflection points.
+    final normalizedActions = List<FunscriptAction>.of(actions, growable: true);
+    for (int k = 0; k < inflectionIndices.length - 1; k++) {
+      final startIdx = inflectionIndices[k];
+      final endIdx = inflectionIndices[k + 1];
+
+      int localMin = 1 << 31; // a very small int
+      int localMax = -(1 << 31);
+      for (int i = startIdx; i <= endIdx; i++) {
+        final val = actions[i].pos;
+        if (val < localMin) localMin = val;
+        if (val > localMax) localMax = val;
+      }
+      final range = localMax - localMin;
+      for (int i = startIdx; i <= endIdx; i++) {
+        int newPos = 0;
+        if (range > 0) {
+          newPos = ((actions[i].pos - localMin) / range * 100).round();
+        }
+        normalizedActions[i] = FunscriptAction(
+          at: actions[i].at,
+          pos: newPos.clamp(0, 100),
+        );
+      }
+    }
+    return normalizedActions;
+  }
+
+  /// Applies a periodic wave modulation to the funscript actions, combining
+  /// a carrier wave (centered at 50) with the (scaled) original oscillation.
+  ///
+  /// Ported from FunscriptWaveModulator_dev/utils/funscriptUtils.ts
+  /// (modulateScript) without the minPosition/maxPosition output mapping;
+  /// the project's Stroke Range + device range handle that.
+  static List<FunscriptAction> waveModulate(
+    List<FunscriptAction> actions,
+    double reductionPercentage,
+    double periodSec,
+    WaveShape shape,
+  ) {
+    if (actions.isEmpty) return [];
+
+    final periodMs = periodSec * 1000.0;
+    final waveScale = (reductionPercentage / 100.0).clamp(0.0, 1.0);
+    final strokeScale = 1.0 - waveScale;
+    final twoPi = 2.0 * pi;
+
+    return actions.map((action) {
+      final t = action.at.toDouble();
+      final phase = periodMs > 0 ? (t % periodMs) / periodMs : 0.0;
+      double normalizedWave;
+      if (shape == WaveShape.sine) {
+        normalizedWave = (1.0 - cos(phase * twoPi)) / 2.0;
+      } else {
+        // triangle
+        normalizedWave = phase < 0.5 ? phase * 2.0 : 1.0 - (phase - 0.5) * 2.0;
+      }
+      // Carrier centered at 50, expanded by the wave budget.
+      final carrierPos = 50.0 + (normalizedWave - 0.5) * (100.0 * waveScale);
+      // Original oscillation centered at 0, scaled by the remaining budget.
+      final localOscillation = (action.pos - 50) * strokeScale;
+      final logicalPos = (carrierPos + localOscillation).clamp(0.0, 100.0);
+      return FunscriptAction(
+        at: action.at,
+        pos: logicalPos.round().clamp(0, 100),
+      );
+    }).toList();
+  }
 
   static List<FunscriptAction> slew(
     List<FunscriptAction> actions,
@@ -480,6 +601,10 @@ class FunscriptAlgorithms {
         .toList();
   }
 
+  /// Scales each action's deviation from its local baseline.
+  ///
+  /// A factor above 1.0 amplifies the stroke, a factor below 1.0 attenuates
+  /// it, and 1.0 returns the actions unchanged.
   static List<FunscriptAction> intensity(
     List<FunscriptAction> actions,
     double intensityFactor,
@@ -534,6 +659,8 @@ class FunscriptAlgorithms {
     final smoothIntervalMs = params.smoothIntervalMs;
     final invert = params.invert;
     final intensity = params.intensity;
+    final maximizeStrokeRangeEnabled = params.maximizeStrokeRangeEnabled;
+    final waveModulation = params.waveModulation;
 
     if (actions.isEmpty) {
       return actions;
@@ -558,6 +685,23 @@ class FunscriptAlgorithms {
 
     if (remapRange != null) {
       actions = FunscriptAlgorithms.remapRange(actions, remapRange);
+    }
+
+    // Per-stroke normalization runs before intensity/wave so the range is
+    // stretched to full device travel first; intensity then scales the
+    // deviation from the local baseline, and wave modulation overlays the
+    // carrier on the normalized oscillation.
+    if (maximizeStrokeRangeEnabled) {
+      actions = FunscriptAlgorithms.maximizeStrokeRange(actions);
+    }
+
+    if (waveModulation != null && waveModulation.enabled) {
+      actions = FunscriptAlgorithms.waveModulate(
+        actions,
+        waveModulation.reductionPercentage,
+        waveModulation.periodSec,
+        waveModulation.shape,
+      );
     }
 
     if (intensity != null && intensity != 1.0) {

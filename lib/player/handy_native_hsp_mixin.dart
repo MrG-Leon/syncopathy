@@ -8,6 +8,7 @@ import 'package:syncopathy/logging.dart';
 import 'package:syncopathy/model/funscript.dart';
 import 'package:syncopathy/model/json/funscript_json.dart';
 import 'package:syncopathy/model/json/handyV3/handy_response.dart';
+import 'package:syncopathy/player/handy_bluetooth_backend_base.dart';
 import 'package:syncopathy/player/hsp_stream_guard.dart';
 import 'package:syncopathy/player/player_backend.dart';
 
@@ -362,6 +363,15 @@ mixin HandyNativeHspMixin
   int _syncCounter = 0;
   Timer? _syncTimer;
 
+  // Home Mode entry triggers a delayed clock recalibration; the token lets us
+  // invalidate a pending attempt if Home is disabled again before it fires.
+  Timer? _homeRecalibrateTimer;
+  int _homeRecalibrateToken = 0;
+  // Set while a video-switch recalibration is in flight so the regular
+  // _timeChange / _hspStateChange paths skip their reset logic and let the
+  // recalibration callback drive the restart.
+  bool _isRecalibrating = false;
+
   // for predictability I'm counting stream IDs up instead of random ones
   int _currentStreamId = 0;
   int get _nextStreamId => _currentStreamId + 1;
@@ -426,6 +436,46 @@ mixin HandyNativeHspMixin
         final homeMode = settingsModel.homeDeviceEnabled.value;
         if (!homeMode) {
           untracked(() => _seeking(isSeeking));
+        }
+      }),
+      // When switching to Home, wait a bit for the device to fully stop and
+      // then re-run Handy clock calibration. If Home is disabled during
+      // the wait, cancel the calibration.
+      effect(() {
+        final isConnected = connected.value;
+        final homeMode = settingsModel.homeDeviceEnabled.value;
+
+        if (!isConnected) {
+          _homeRecalibrateTimer?.cancel();
+          _homeRecalibrateTimer = null;
+          return;
+        }
+
+        if (homeMode) {
+          _homeRecalibrateToken += 1;
+          final token = _homeRecalibrateToken;
+
+          _homeRecalibrateTimer?.cancel();
+          _homeRecalibrateTimer = Timer(
+            const Duration(seconds: 1),
+            () {
+              if (_homeRecalibrateToken != token) return;
+              if (!connected.value) return;
+              if (!settingsModel.homeDeviceEnabled.value) return;
+
+              final backend = this;
+              if (backend is HandyBluetoothBackendBase) {
+                (backend as HandyBluetoothBackendBase)
+                    .recalibrateClock(syncTries: 3)
+                    .catchError(
+                      (e) => Logger.error("Clock recalibration failed: $e"),
+                    );
+              }
+            },
+          );
+        } else {
+          _homeRecalibrateTimer?.cancel();
+          _homeRecalibrateTimer = null;
         }
       }),
     ];
@@ -536,7 +586,7 @@ mixin HandyNativeHspMixin
           } else if (hspState.points > 0) {
             // This is an edge case where we have to reset
             final actions = currentActions.value;
-            if (actions != null) _resetPlayback(actions);
+            if (actions != null && !_isRecalibrating) _resetPlayback(actions);
           }
         }
         debugPlaybackDelta.value = 0;
@@ -638,9 +688,18 @@ mixin HandyNativeHspMixin
 
     // Re-bootstrap if the script itself changed under us.
     if (_bufferedActionsReference != actions) {
-      _resetPlayback(actions);
+      _bufferedActionsReference = actions;
+      if (!_isRecalibrating) {
+        if (actions != null) {
+          _handleActionsChanged(actions);
+        } else {
+          _resetPlayback(null);
+        }
+      }
+      return;
     }
     if (actions == null) return;
+    if (_isRecalibrating) return;
 
     final isPlaying = !timesource.paused.value;
     final currentTime = timesource.currentRawMs;
@@ -744,14 +803,18 @@ mixin HandyNativeHspMixin
 
           if (currentTimeMs >= state.firstPointTime &&
               currentTimeMs <= state.lastPointTime) {
+            final int deltaMs = currentTimeMs - state.currentTime;
+            // one hard sync 0.9 followed by soft syncs 0.5, but re-hard-sync
+            // whenever the device clock drifted more than 30ms.
+            final double syncFilter =
+                (_syncCounter < 1 || deltaMs.abs() > 30) ? 0.9 : 0.5;
             hspCurrentTimeSet(
               currentTime: currentTimeMs,
-              // one hard sync 0.9 followed by soft syncs 0.5
-              filter: _syncCounter < 1 ? 0.9 : 0.5,
+              filter: syncFilter,
             );
             if (kDebugMode) {
               debugPrint(
-                "SYNC COUNTER: $_syncCounter hard:${_syncCounter < 1} ${currentTimeMs}ms",
+                "SYNC COUNTER: $_syncCounter hard:${syncFilter == 0.9} ${currentTimeMs}ms",
               );
             }
             _syncCounter += 1;
@@ -779,6 +842,41 @@ mixin HandyNativeHspMixin
         (state.maxPoints ~/ _softPointLimitGranularity) *
         _softPointLimitGranularity;
     return state.points + additionalPoints > softMaxPoints;
+  }
+
+  /// Handles a script switch by re-running Handy clock calibration before
+  /// re-bootstrapping playback. The calibration gives the device a fresh time
+  /// baseline for the new script; once it completes (or fails) we reset
+  /// playback against the latest actions. [_isRecalibrating] gates the regular
+  /// _timeChange / _hspStateChange reset paths so they don't fight us while the
+  /// recalibration is in flight.
+  void _handleActionsChanged(List<FunscriptAction> actions) {
+    final backend = this;
+    if (backend is HandyBluetoothBackendBase) {
+      _isRecalibrating = true;
+      (backend as HandyBluetoothBackendBase)
+          .recalibrateClock(syncTries: 3)
+          .then((_) {
+            if (!connected.value || settingsModel.homeDeviceEnabled.value) {
+              return;
+            }
+            final latestActions = currentActions.value;
+            _resetPlayback(latestActions);
+          })
+          .catchError((e) {
+            Logger.error("Video switch clock recalibration failed: $e");
+            if (!connected.value || settingsModel.homeDeviceEnabled.value) {
+              return;
+            }
+            final latestActions = currentActions.value;
+            _resetPlayback(latestActions);
+          })
+          .whenComplete(() {
+            _isRecalibrating = false;
+          });
+    } else {
+      _resetPlayback(actions);
+    }
   }
 
   void _resetPlayback(List<FunscriptAction>? actions) {
@@ -826,6 +924,7 @@ mixin HandyNativeHspMixin
     _syncTimer?.cancel();
     _syncTimer = null;
     _syncCounter = 0;
+    _isRecalibrating = false;
     debugPlaybackDelta.value = 0;
   }
 

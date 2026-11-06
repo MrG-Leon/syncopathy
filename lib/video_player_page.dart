@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:signals/signals_flutter.dart';
+import 'package:syncopathy/fullscreen_controller.dart';
 import 'package:syncopathy/helper/effect_dispose_mixin.dart';
 import 'package:syncopathy/ioc.dart';
 import 'package:syncopathy/model/player_model.dart';
@@ -30,8 +30,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     _showSettings.dispose();
     _showControls.dispose();
     // Fire-and-forget: dispose() must stay synchronous, and awaiting across the
-    // teardown gap risks the chrome reset being dropped.
-    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    // teardown gap risks the chrome reset being dropped. Only restores the
+    // system bars when the app-wide fullscreen mode is not holding them
+    // hidden.
+    fullscreenController.restoreSystemUi();
     super.dispose();
   }
 
@@ -74,7 +76,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
           showSettings: _showSettings,
         ),
         AnimatedSwitcher(
-          duration: const Duration(milliseconds: 500),
+          // Short enough not to hide a fast first frame behind the spinner's
+          // fade, long enough to keep the overlay from flashing on every switch.
+          duration: const Duration(milliseconds: 200),
           child: !noFunscriptLoaded
               ? const SizedBox.shrink(key: ValueKey("no_loading_overlay"))
               : inPlaylistTransition

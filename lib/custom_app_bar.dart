@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:signals/signals_flutter.dart';
 import 'package:syncopathy/connection_button.dart';
+import 'package:syncopathy/fullscreen_controller.dart';
 import 'package:syncopathy/helper/extensions.dart';
 import 'package:syncopathy/heresphere/heresphere_status_button.dart';
 import 'package:syncopathy/home_button.dart';
@@ -46,22 +47,15 @@ class CustomAppBarState extends State<CustomAppBar> {
     final currentlyOpen = playerModel.currentlyOpen.value;
 
     return AppBar(
-      backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+      backgroundColor: Theme.of(context).appBarTheme.backgroundColor,
       flexibleSpace: !kIsWeb
           ? DragToMoveArea(child: Container(color: Colors.transparent))
           : null,
       title: _buildTitle(currentlyOpen),
       actions: [
         HomeButton(),
-        if (kIsWeb) SizedBox(width: 4),
-        if (kIsWeb)
-          IconButton(
-            icon: const Icon(Icons.fullscreen),
-            tooltip: "Fullscreen",
-            onPressed: () async {
-              SimpleMode.toggleFullscreen();
-            },
-          ),
+        const SizedBox(width: 4),
+        _buildFullscreenButton(),
         if (syncopathySimpleMode) SizedBox(width: 4),
         if (syncopathySimpleMode)
           TextButton.icon(
@@ -126,6 +120,19 @@ class CustomAppBarState extends State<CustomAppBar> {
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildFullscreenButton() {
+    return SignalBuilder(
+      builder: (context) {
+        final isFullscreen = fullscreenController.isFullscreen.value;
+        return IconButton(
+          icon: Icon(isFullscreen ? Icons.fullscreen_exit : Icons.fullscreen),
+          tooltip: isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen',
+          onPressed: fullscreenController.toggle,
+        );
+      },
     );
   }
 

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:signals/signals_flutter.dart';
+import 'package:syncopathy/funscript_algo.dart';
 import 'package:syncopathy/helper/debouncer.dart';
 import 'package:syncopathy/helper/entity_binding.dart';
 import 'package:syncopathy/heresphere/heresphere_mode.dart';
@@ -30,6 +31,9 @@ class SettingsModel {
   final Signal<bool> remapFullRange = signal(false);
   final Signal<bool> skipToAction = signal(false);
   final Signal<bool> embeddedVideoPlayer = signal(kIsWeb);
+  /// Windows only: use mpv's own gpu-next window, captured into a Flutter
+  /// texture, so mpv filters and RTX VSR work inside the embedded player.
+  final Signal<bool> useNativeMpvCapture = signal(true);
   final Signal<bool> autoSwitchToVideoPlayerTab = signal(false);
   final Signal<bool> invert = signal(false);
   final Signal<PlayerBackendType> playerBackendType = signal(
@@ -55,6 +59,49 @@ class SettingsModel {
   );
   final Signal<HwdecMode> hwdecMode = signal(HwdecMode.autoCopy);
   final MapSignal<String, ShortcutBinding> customShortcuts = mapSignal({});
+
+  // Per-stroke normalization & wave modulation.
+  final Signal<bool> maximizeStrokeRange = signal(false);
+  final Signal<bool> waveModulationEnabled = signal(false);
+  final Signal<double> waveReductionPercentage = signal(82);
+  final Signal<double> wavePeriodSec = signal(15);
+  final Signal<WaveShape> waveShape = signal(WaveShape.sine);
+
+  // Edge Mode auto-toggle: the Edge Mode shortcut toggles Home Mode on, then
+  // it automatically toggles back off after this many seconds. Use
+  // [setEdgeModeDelay] for a persisted manual change; automatic adjustments
+  // write this signal directly.
+  final Signal<int> edgeModeAutoToggleDelaySeconds = signal(30);
+  static const int edgeModeAutoToggleDelayMinSeconds = 1;
+  static const int edgeModeAutoToggleDelayMaxSeconds = 90;
+
+  /// How much to reduce the intensity factor after each automatic Edge Mode
+  /// toggle-back. Stored as a factor: 0.05 is five percentage points of the
+  /// intensity slider.
+  final Signal<double> edgeModeIntensityStep = signal(0.05);
+  static const double edgeModeIntensityStepMin = 0.0;
+  static const double edgeModeIntensityStepMax = 1.0;
+
+  /// How many seconds to lengthen the next Edge Mode delay after each automatic
+  /// toggle-back.
+  final Signal<int> edgeModeDelayStepSeconds = signal(5);
+  static const int edgeModeDelayStepMinSeconds = 0;
+  static const int edgeModeDelayStepMaxSeconds = 30;
+
+  /// Lower bound for the automatic intensity reduction. At or below this value
+  /// no further reduction happens.
+  final Signal<double> edgeModeIntensityFloor = signal(0.0);
+  static const double edgeModeIntensityFloorMin = 0.0;
+  static const double edgeModeIntensityFloorMax = 5.0;
+
+  /// Upper bound for the automatic delay increase. At or above this value no
+  /// further increase happens.
+  final Signal<int> edgeModeDelayCeilingSeconds = signal(90);
+  static const int edgeModeDelayCeilingMinSeconds = 1;
+  static const int edgeModeDelayCeilingMaxSeconds = 90;
+
+  // Path to the replacement funscript file used by the Replace Script shortcut.
+  final Signal<String?> replaceScriptPath = signal(null);
 
   /// Experimental: serve the media library to HereSphere over the local
   /// network. Off by default — enabling it exposes the indexed library to
@@ -108,7 +155,8 @@ class SettingsModel {
     () => hwdecOverride ?? hwdecMode.value.mpvValue,
   );
 
-  // Not persisted in the database
+  /// Session value: use [setIntensity] for a persisted manual change; automatic
+  /// Edge Mode adjustments write this signal directly.
   final Signal<double?> intensity = signal(null);
   final Signal<int?> pchipSmoothInterval = signal(null);
   final Signal<Duration> funscriptGraphViewDuration = signal(
@@ -116,17 +164,26 @@ class SettingsModel {
   );
   final Signal<bool> homeDeviceEnabled = signal(false);
 
+  /// How many times Edge Mode has been entered during this session. Not
+  /// persisted: a fresh start begins at zero, so the count describes only the
+  /// current session.
+  final Signal<int> edgeModeActivationCount = signal(0);
+
+  Timer? _edgeModeAutoToggleTimer;
+
   /// Which end of the stroke Home Mode parks at. Session-only, like
   /// [homeDeviceEnabled] itself — a fresh start comes up at [HomeTarget.low].
   final Signal<HomeTarget> homeTarget = signal(HomeTarget.low);
 
   VoidCallback? _saveEffectDispose;
 
-  /// The single source of truth for which fields persist: each binding copies
-  /// one setting out of [_entity] on load and back into it on save. Adding a
-  /// persisted setting means declaring its signal and adding one line here —
-  /// there is no third copy site to keep in sync. Signals absent from this list
-  /// are intentionally not persisted.
+  /// The single source of truth for which fields persist automatically: each
+  /// binding copies one setting out of [_entity] on load and back into it on
+  /// save. Adding a persisted setting means declaring its signal and adding one
+  /// line here — there is no third copy site to keep in sync. Signals absent
+  /// from this list are intentionally not persisted, except [intensity] and
+  /// [edgeModeAutoToggleDelaySeconds]: their manual setters write them
+  /// explicitly so Edge Mode's automatic adjustments stay session-local.
   late final List<EntityBinding> _bindings = [
     EntityBinding(() => min.value = _entity.min, () => _entity.min = min.value),
     EntityBinding(() => max.value = _entity.max, () => _entity.max = max.value),
@@ -157,6 +214,10 @@ class SettingsModel {
     EntityBinding(
       () => embeddedVideoPlayer.value = _entity.embeddedVideoPlayer || kIsWeb,
       () => _entity.embeddedVideoPlayer = embeddedVideoPlayer.value,
+    ),
+    EntityBinding(
+      () => useNativeMpvCapture.value = _entity.useNativeMpvCapture,
+      () => _entity.useNativeMpvCapture = useNativeMpvCapture.value,
     ),
     EntityBinding(
       () =>
@@ -198,6 +259,66 @@ class SettingsModel {
     EntityBinding(
       () => customShortcuts.value = _entity.customShortcuts,
       () => _entity.customShortcuts = customShortcuts.value,
+    ),
+    EntityBinding(
+      () => maximizeStrokeRange.value = _entity.maximizeStrokeRange,
+      () => _entity.maximizeStrokeRange = maximizeStrokeRange.value,
+    ),
+    EntityBinding(
+      () => waveModulationEnabled.value = _entity.waveModulationEnabled,
+      () => _entity.waveModulationEnabled = waveModulationEnabled.value,
+    ),
+    EntityBinding(
+      () => waveReductionPercentage.value = _entity.waveReductionPercentage,
+      () => _entity.waveReductionPercentage = waveReductionPercentage.value,
+    ),
+    EntityBinding(
+      () => wavePeriodSec.value = _entity.wavePeriodSec,
+      () => _entity.wavePeriodSec = wavePeriodSec.value,
+    ),
+    EntityBinding(
+      () => waveShape.value = _entity.waveShape,
+      () => _entity.waveShape = waveShape.value,
+    ),
+    EntityBinding(
+      () => pchipSmoothInterval.value = _entity.pchipSmoothInterval,
+      () => _entity.pchipSmoothInterval = pchipSmoothInterval.value,
+    ),
+    EntityBinding(
+      () => edgeModeIntensityStep.value = _clampEdgeModeIntensityStep(
+        _entity.edgeModeIntensityStep,
+      ),
+      () => _entity.edgeModeIntensityStep = _clampEdgeModeIntensityStep(
+        edgeModeIntensityStep.value,
+      ),
+    ),
+    EntityBinding(
+      () => edgeModeDelayStepSeconds.value = _clampEdgeModeDelayStep(
+        _entity.edgeModeDelayStepSeconds,
+      ),
+      () => _entity.edgeModeDelayStepSeconds = _clampEdgeModeDelayStep(
+        edgeModeDelayStepSeconds.value,
+      ),
+    ),
+    EntityBinding(
+      () => edgeModeIntensityFloor.value = _clampEdgeModeIntensityFloor(
+        _entity.edgeModeIntensityFloor,
+      ),
+      () => _entity.edgeModeIntensityFloor = _clampEdgeModeIntensityFloor(
+        edgeModeIntensityFloor.value,
+      ),
+    ),
+    EntityBinding(
+      () => edgeModeDelayCeilingSeconds.value = _clampEdgeModeDelayCeiling(
+        _entity.edgeModeDelayCeilingSeconds,
+      ),
+      () => _entity.edgeModeDelayCeilingSeconds = _clampEdgeModeDelayCeiling(
+        edgeModeDelayCeilingSeconds.value,
+      ),
+    ),
+    EntityBinding(
+      () => replaceScriptPath.value = _entity.replaceScriptPath,
+      () => _entity.replaceScriptPath = replaceScriptPath.value,
     ),
     EntityBinding(
       () => hereSphereEnabled.value = _entity.hereSphereEnabled,
@@ -253,7 +374,124 @@ class SettingsModel {
 
   SettingsModel();
 
+  /// Toggles Home Mode. [edgeMode] is true only when the Edge Mode
+  /// shortcut triggers; that schedules one automatic toggle after
+  /// [edgeModeAutoToggleDelaySeconds]. Mouse or any other shortcut cancels a
+  /// pending auto-toggle.
+  void toggleHomeDevice({required bool edgeMode}) {
+    _edgeModeAutoToggleTimer?.cancel();
+    _edgeModeAutoToggleTimer = null;
+
+    homeDeviceEnabled.value = !homeDeviceEnabled.value;
+
+    if (edgeMode && homeDeviceEnabled.value) {
+      edgeModeActivationCount.value += 1;
+      final secs = edgeModeAutoToggleDelaySeconds.value.clamp(
+        edgeModeAutoToggleDelayMinSeconds,
+        edgeModeAutoToggleDelayMaxSeconds,
+      );
+      _edgeModeAutoToggleTimer = Timer(Duration(seconds: secs), () {
+        _edgeModeAutoToggleTimer = null;
+        if (!homeDeviceEnabled.value) return;
+        homeDeviceEnabled.value = false;
+        _applyEdgeModeAdjustment();
+      });
+    }
+  }
+
+  /// Toggles Home Mode and parks at the top of the stroke (high).
+  /// When exiting, resets the home target back to [HomeTarget.low].
+  /// Cancels any pending Edge Mode auto-toggle timer.
+  void toggleHomeModeHigh() {
+    _edgeModeAutoToggleTimer?.cancel();
+    _edgeModeAutoToggleTimer = null;
+
+    if (homeDeviceEnabled.value) {
+      // Exiting Home Mode: reset target to low.
+      homeDeviceEnabled.value = false;
+      homeTarget.value = HomeTarget.low;
+    } else {
+      // Entering Home Mode: park at the top.
+      homeTarget.value = HomeTarget.high;
+      homeDeviceEnabled.value = true;
+    }
+  }
+
+  /// Persists a user-driven intensity change. Edge Mode's automatic
+  /// adjustment writes the signal directly, so it stays session-local.
+  void setIntensity(double? value) {
+    final normalized = value == null ? null : value.clamp(0.0, 5.0).toDouble();
+    intensity.value = normalized;
+    _entity.intensity = normalized;
+    unawaited(_save());
+  }
+
+  /// Persists a user-driven Edge Mode delay change. Automatic adjustments
+  /// write the signal directly, so a restart returns to this value.
+  void setEdgeModeDelay(int seconds) {
+    final clamped = _clampEdgeModeDelay(seconds);
+    edgeModeAutoToggleDelaySeconds.value = clamped;
+    _entity.edgeModeAutoToggleDelaySeconds = clamped;
+    unawaited(_save());
+  }
+
+  int _clampEdgeModeDelay(int seconds) => seconds.clamp(
+        edgeModeAutoToggleDelayMinSeconds,
+        edgeModeAutoToggleDelayMaxSeconds,
+      );
+
+  double _clampEdgeModeIntensityStep(double step) => step.clamp(
+        edgeModeIntensityStepMin,
+        edgeModeIntensityStepMax,
+      );
+
+  int _clampEdgeModeDelayStep(int seconds) => seconds.clamp(
+        edgeModeDelayStepMinSeconds,
+        edgeModeDelayStepMaxSeconds,
+      );
+
+  double _clampEdgeModeIntensityFloor(double value) => value.clamp(
+        edgeModeIntensityFloorMin,
+        edgeModeIntensityFloorMax,
+      );
+
+  int _clampEdgeModeDelayCeiling(int seconds) => seconds.clamp(
+        edgeModeDelayCeilingMinSeconds,
+        edgeModeDelayCeilingMaxSeconds,
+      );
+
+  /// Applies the configured post-Edge-Mode adjustments after an automatic
+  /// toggle-back: intensity down, next delay up. Manual exits cancel the
+  /// timer, so they never reach this.
+  void _applyEdgeModeAdjustment() {
+    final currentIntensity = intensity.value;
+    final intensityStep = edgeModeIntensityStep.value;
+    final intensityFloor = _clampEdgeModeIntensityFloor(
+      edgeModeIntensityFloor.value,
+    );
+    if (currentIntensity != null &&
+        intensityStep > 0 &&
+        currentIntensity > intensityFloor) {
+      intensity.value = (currentIntensity - intensityStep)
+          .clamp(intensityFloor, 5.0)
+          .toDouble();
+    }
+
+    final currentDelay = edgeModeAutoToggleDelaySeconds.value;
+    final delayStep = edgeModeDelayStepSeconds.value;
+    final delayCeiling = _clampEdgeModeDelayCeiling(
+      edgeModeDelayCeilingSeconds.value,
+    );
+    if (delayStep > 0 && currentDelay < delayCeiling) {
+      final next = currentDelay + delayStep;
+      edgeModeAutoToggleDelaySeconds.value = next < delayCeiling
+          ? next
+          : delayCeiling;
+    }
+  }
+
   Future<void> dispose() async {
+    _edgeModeAutoToggleTimer?.cancel();
     _saveEffectDispose?.call();
   }
 
@@ -265,6 +503,13 @@ class SettingsModel {
     for (final binding in _bindings) {
       binding.loadFromEntity();
     }
+
+    // Loaded outside the bindings: these two are written back only by their
+    // manual setters, so Edge Mode's automatic adjustments do not persist.
+    intensity.value = _entity.intensity;
+    edgeModeAutoToggleDelaySeconds.value = _clampEdgeModeDelay(
+      _entity.edgeModeAutoToggleDelaySeconds,
+    );
 
     _saveEffectDispose = effect(() async {
       for (final binding in _bindings) {

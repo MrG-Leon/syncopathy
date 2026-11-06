@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
@@ -38,6 +39,18 @@ class Heatmap extends StatefulWidget {
 
 class _HeatmapState extends State<Heatmap> {
   final Signal<double?> _hoverPosition = signal(null);
+
+  /// Where a click/drag currently points, in the same 0..N units as
+  /// [Heatmap.videoPositionFixedStep]. Painting the playhead from this signal
+  /// gives immediate feedback; the real mpv position corrects it as soon as the
+  /// seek is reported (or the preview expires if the seek did not land).
+  final Signal<int?> _previewStep = signal(null);
+  // Exact millisecond target for the seek. The painted step is quantised to
+  // [videoPlayerPositionFixedStepCount], which is far too coarse to send to
+  // mpv (one step is seconds on a long video).
+  int? _previewMs;
+  Timer? _previewTimer;
+
   final Throttler _throttler = Throttler(milliseconds: 150);
 
   // Memoized per-action-pair effective speeds. This is the size-independent,
@@ -71,22 +84,63 @@ class _HeatmapState extends State<Heatmap> {
   }
 
   @override
+  void didUpdateWidget(covariant Heatmap oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // A new script owns the timeline now; a preview from the previous one must
+    // not paint over it.
+    if (!identical(oldWidget.actions, widget.actions)) {
+      _clearPreview();
+    }
+  }
+
+  @override
   void dispose() {
-    super.dispose();
+    _clearPreview();
+    _previewStep.dispose();
     _throttler.dispose();
+    super.dispose();
   }
 
   bool get _seekable => widget.onClick != null;
 
-  void _handleInteraction(Offset localPosition, BoxConstraints constraints) {
+  void _clearPreview() {
+    _previewTimer?.cancel();
+    _previewTimer = null;
+    _previewMs = null;
+    _previewStep.value = null;
+  }
+
+  void _setPreview(double fraction, int durationMs) {
+    _previewMs = (fraction * durationMs).round();
+    _previewStep.value = (fraction * videoPlayerPositionFixedStepCount)
+        .round()
+        .clamp(0, videoPlayerPositionFixedStepCount);
+    _previewTimer?.cancel();
+    _previewTimer = Timer(const Duration(milliseconds: 500), _clearPreview);
+  }
+
+  void _previewAt(Offset localPosition, BoxConstraints constraints) {
+    if (!_seekable || constraints.maxWidth <= 0) return;
+    final durationMs = widget.totalDurationMs;
+    if (durationMs <= 0) return;
+    final dx = localPosition.dx.clamp(0.0, constraints.maxWidth);
+    _setPreview(dx / constraints.maxWidth, durationMs);
+  }
+
+  /// Issues the seek for the last previewed position. Called once for a tap
+  /// (on pan start it has already run) and again when a drag ends, so the
+  /// release position is honoured even if it fell between throttled updates.
+  void _commitPreview() {
     final onClick = widget.onClick;
-    if (onClick == null) return;
-    final totalDuration = widget.totalDuration.value ?? 0;
-    if (totalDuration > 0 && constraints.maxWidth > 0) {
-      final dx = localPosition.dx.clamp(0, constraints.maxWidth);
-      final clickedMs = (dx / constraints.maxWidth) * widget.totalDurationMs;
-      onClick(Duration(milliseconds: clickedMs.round()));
-    }
+    final clickedMs = _previewMs;
+    if (onClick == null || clickedMs == null) return;
+    onClick(Duration(milliseconds: clickedMs));
+  }
+
+  void _handleInteraction(Offset localPosition, BoxConstraints constraints) {
+    if (!_seekable) return;
+    _previewAt(localPosition, constraints);
+    _commitPreview();
   }
 
   /// Seek by [delta] of the total duration (e.g. 0.02 = 2%). Backs the
@@ -100,6 +154,7 @@ class _HeatmapState extends State<Heatmap> {
     final current =
         widget.videoPositionFixedStep.value / videoPlayerPositionFixedStepCount;
     final target = (current + delta).clamp(0.0, 1.0);
+    _setPreview(target, durationMs);
     onClick(Duration(milliseconds: (target * durationMs).round()));
   }
 
@@ -142,16 +197,28 @@ class _HeatmapState extends State<Heatmap> {
         behavior: HitTestBehavior.opaque,
         onPanStart: (details) {
           _hoverPosition.value = null;
+          // The pointer-down already previewed this position; this only keeps
+          // the preview under the finger while a drag begins.
+          _previewAt(details.localPosition, constraints);
         },
         onPanUpdate: (details) {
-          _throttler.run(() async {
-            _handleInteraction(details.localPosition, constraints);
-          });
+          _previewAt(details.localPosition, constraints);
+          _throttler.run(_commitPreview);
         },
-        onTapUp: (details) {
-          _handleInteraction(details.localPosition, constraints);
+        onPanEnd: (details) {
+          // Commit the release position now; the throttled update may still be
+          // pointing at an older frame.
+          _throttler.cancel();
+          _commitPreview();
+        },
+        onPanCancel: () {
+          _throttler.cancel();
+          _commitPreview();
         },
         onTapDown: (details) {
+          // One seek per tap: onTapDown gives the feedback, and issuing the
+          // seek here avoids waiting for the release. The old onTapUp handler
+          // sent a second seek for the same click.
           _handleInteraction(details.localPosition, constraints);
         },
         child: Column(
@@ -191,7 +258,12 @@ class _HeatmapState extends State<Heatmap> {
                   // 2. Indicator painter (Vertical white line)
                   SignalBuilder(
                     builder: (context) {
-                      final position = widget.videoPositionFixedStep.value;
+                      // The preview wins until the real seek is reported; this
+                      // is what makes the click feel instant instead of
+                      // waiting for mpv's position event.
+                      final position =
+                          _previewStep.value ??
+                          widget.videoPositionFixedStep.value;
                       return CustomPaint(
                         painter: IndicatorPainter(videoPositionStep: position),
                       );
@@ -223,7 +295,9 @@ class _HeatmapState extends State<Heatmap> {
                 child: ExcludeSemantics(
                   child: SignalBuilder(
                     builder: (context) {
-                      final positionStep = widget.videoPositionFixedStep.value;
+                      final positionStep =
+                          _previewStep.value ??
+                          widget.videoPositionFixedStep.value;
                       final value =
                           (positionStep / videoPlayerPositionFixedStepCount)
                               .clamp(0.0, 1.0);
